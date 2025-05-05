@@ -1,0 +1,17 @@
+<launch>
+    <!-- Define an argument for the URDF file name, defaulting to leap_right.urdf -->
+    <arg name="urdf_file" default="leap_right.urdf" />
+
+    <!-- Load the URDF into the robot_description parameter -->
+    <param name="robot_description" textfile="$(find leap_description)/robots/$(arg urdf_file)" />
+
+    <!-- Start the robot_state_publisher to publish the robot's transforms -->
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" />
+
+    <!-- Start the joint_state_publisher to publish joint states -->
+    <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher" />
+
+    <!-- Launch RViz with a configuration file for visualization -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find leap_description)/config/rviz.rviz" />
+
+</launch>
