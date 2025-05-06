@@ -1,3 +1,89 @@
+## IRVL Leap Hand ROS Packages
+This repository contains the ROS Noetic packages used to control our Leap Hand. They are a modified version of the original authors' ros_module. It contains two ROS packages for working with the LEAP Hand: `leap_description` and `leap_hand`. These packages provide URDF models and control interfaces for simulation, visualization, and real-time control of the LEAP Hand within ROS.
+
+- `leap_description`: URDF models for the LEAP Hand (right and left) and visualization tools.
+- `leap_hand`: Control interfaces, services, and launch files for interacting with the LEAP Hand.
+
+---
+
+## LEAP Description Package
+
+The `leap_description` package provides URDF models for the LEAP Hand, enabling easy integration into ROS's `robot_description` parameter for simulation and visualization.
+
+### URDF Models
+
+- `leap_right.urdf`: Model for the right LEAP Hand.
+- `leap_left.urdf`: Model for the left LEAP Hand.
+
+These files define the hand's kinematic structure and joint limits, making them ideal for loading into ROS. The package includes a launch file, `visualize_robot.launch`, to load a URDF and visualize it in RViz.
+
+#### How to Run
+
+To visualize the right LEAP Hand in RViz, use:
+
+```bash
+roslaunch leap_description visualize_robot.launch urdf_file:=leap_right.urdf
+```
+
+- Replace `leap_right.urdf` with `leap_left.urdf` for the left hand.
+
+
+<div style="text-align: center;">
+    <img src="./images/rviz_urdf.png" alt="RViz LEAP Hand Visualization" width="700">
+</div>
+
+---
+
+## LEAP Hand Package
+
+The `leap_hand` package provides tools to control the LEAP Hand, with enhancements for simulation compatibility and communication efficiency.
+
+### Controller Features
+
+- **Simulation-Aligned Values**: The controller uses LEAP Hand simulation conventions, where all joints set to 0 means the hand is fully open. This ensures consistency between simulation and physical control. 
+- **Joint Limit Enforcement**: Target positions are automatically clipped to the URDF-defined joint limits, preventing invalid commands.
+
+### Position Control
+
+- **Topic**: `/leaphand_node/cmd_leap`
+- **Message Type**: `sensor_msgs/JointState`
+- **Functionality**: Publish joint positions to this topic to control the hand. The controller enforces URDF joint limits.
+
+### Services
+
+Services for improved state querying efficiency, found that the original code didn't have them completely implemented:
+
+- `/leap_pos_vel`: Returns joint positions and velocities.
+- `/leap_pos_vel_effort`: Returns joint positions, velocities, and efforts.
+
+#### Example Service Call
+
+```bash
+rosservice call /leap_pos_vel
+```
+
+### Launch File
+
+The `leap.launch` file initializes the control node, services, and robot description.
+
+#### How to Run
+
+```bash
+roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
+```
+
+- Loads the URDF into `robot_description`.
+- Starts the `leaphand_node` for control and services.
+- Updates joint states only when services are called, reducing communication issues when reading and setting positions simultaneously.
+
+<div style="text-align: center;">
+    <img src="./images/leap.gif" alt="RViz LEAP Hand Visualization" width="700">
+</div>
+
+---
+
+
+# Leap Hand API Original Readme:
 ## Welcome to the LEAP Hand SDK
 - Please visit [our website](http://leaphand.com/) for more information about LEAP hand.
 #### Software Setup

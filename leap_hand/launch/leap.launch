@@ -1,7 +1,7 @@
 <launch>
     <!-- Define arguments -->
     <arg name="urdf_file" default="leap_right.urdf" />
-    <arg name="frequency" default="60.0" doc="Frequency (Hz) for publishing joint states" />
+    <!-- <arg name="frequency" default="60.0" doc="Frequency (Hz) for publishing joint states" /> -->
 
     <!-- Load the URDF into the robot_description parameter -->
     <param name="robot_description" textfile="$(find leap_description)/robots/$(arg urdf_file)" />
@@ -10,9 +10,9 @@
     <node name="leaphand_node" pkg="leap_hand" type="leaphand_node.py" output="screen" required="true" />
 
     <!-- Start the state publisher node to publish joint states to /leap_hand_state -->
-    <node name="leap_hand_state_publisher" pkg="leap_hand" type="leap_hand_state_publisher.py" output="screen">
+    <!-- <node name="leap_hand_state_publisher" pkg="leap_hand" type="leap_hand_state_publisher.py" output="screen">
         <param name="reading_frequency" value="$(arg frequency)" />
-    </node>
+    </node> -->
 
     <!-- Start robot_state_publisher to publish TF transforms based on joint states -->
     <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">

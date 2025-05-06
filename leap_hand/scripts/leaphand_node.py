@@ -53,6 +53,7 @@ class LeapNode:
         
         # Enables position-current control mode, it commands a position and then caps the current so the motors don't overload
         self.dxl_client.sync_write(motors, np.ones(len(motors))*5, 11, 1)
+        self.dxl_client.sync_write(motors, np.zeros(len(motors)), 9, 1) # Set return time delay to 0
         self.dxl_client.set_torque_enabled(motors, True)
 
         # Set parameters for PID control
