@@ -245,6 +245,9 @@ class DynamixelClient:
         positions = positions / self._pos_vel_cur_reader.pos_scale
         self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
                         LEN_GOAL_POSITION)
+        # time.sleep(1/43)
+        # self.sync_write(motor_ids, positions, ADDR_GOAL_POSITION,
+        #                 LEN_GOAL_POSITION)
 
     def write_byte(
             self,
@@ -386,7 +389,7 @@ class DynamixelReader:
         """Reads data from the motors."""
         self.client.check_connected()
         success = False
-        while not success and retries >= 0:
+        while not success and retries >= 0: #! Retries
             comm_result = self.operation.txRxPacket()
             success = self.client.handle_packet_result(
                 comm_result, context='read')
