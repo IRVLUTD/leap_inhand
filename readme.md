@@ -1,5 +1,16 @@
 ## IRVL Leap Hand ROS Packages
-This repository contains the ROS Noetic packages used to control our Leap Hand. They are a modified version of the original authors' ros_module. It contains two ROS packages for working with the LEAP Hand: `leap_description` and `leap_hand`. These packages provide URDF models and control interfaces for simulation, visualization, and real-time control of the LEAP Hand within ROS.
+This repository contains the ROS Noetic packages used to control our Leap Hand. They are a modified version of the original authors' ros_module. You can find the original repo at this [link](https://github.com/leap-hand/LEAP_Hand_API). If you find it useful please remember to cite their paper to support the authors' amazing work. 
+
+```
+@article{shaw2023leaphand,
+  title={LEAP Hand: Low-Cost, Efficient, and Anthropomorphic Hand for Robot Learning},
+  author={Shaw, Kenneth and Agarwal, Ananye and Pathak, Deepak},
+  journal={Robotics: Science and Systems (RSS)},
+  year={2023}
+}
+```
+
+This repository contains two ROS packages for working with the LEAP Hand: `leap_description` and `leap_hand`. These packages provide URDF models and control interfaces for simulation, visualization, and real-time control of the LEAP Hand within ROS.
 
 - `leap_description`: URDF models for the LEAP Hand (right and left) and visualization tools.
 - `leap_hand`: Control interfaces, services, and launch files for interacting with the LEAP Hand.
