@@ -40,7 +40,7 @@ roslaunch leap_description visualize_robot.launch urdf_file:=leap_right.urdf
 
 
 <p align="center">
-    <img src="./images/rviz_urdf.png" alt="RViz LEAP Hand Visualization" width="500">
+    <img src="./images/rviz_urdf.png" alt="RViz LEAP Hand Visualization" width="700">
 </p>
 
 ---
@@ -88,7 +88,7 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 - Updates joint states only when services are called, reducing communication issues when reading and setting positions simultaneously.
 
 <p align="center">
-    <img src="./images/leap.gif" alt="RViz LEAP Hand Visualization" width="500">
+    <img src="./images/leap.gif" alt="RViz LEAP Hand Visualization" width=700">
 </p>
 
 ---
