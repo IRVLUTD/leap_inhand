@@ -39,9 +39,9 @@ roslaunch leap_description visualize_robot.launch urdf_file:=leap_right.urdf
 - Replace `leap_right.urdf` with `leap_left.urdf` for the left hand.
 
 
-<div style="text-align: center;">
-    <img src="./images/rviz_urdf.png" alt="RViz LEAP Hand Visualization" width="700">
-</div>
+<p align="center">
+    <img src="./images/rviz_urdf.png" alt="RViz LEAP Hand Visualization" width="500">
+</p>
 
 ---
 
@@ -87,9 +87,9 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 - Starts the `leaphand_node` for control and services.
 - Updates joint states only when services are called, reducing communication issues when reading and setting positions simultaneously.
 
-<div style="text-align: center;">
-    <img src="./images/leap.gif" alt="RViz LEAP Hand Visualization" width="700">
-</div>
+<p align="center">
+    <img src="./images/leap.gif" alt="RViz LEAP Hand Visualization" width="500">
+</p>
 
 ---
 
