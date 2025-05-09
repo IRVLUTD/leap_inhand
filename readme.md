@@ -51,7 +51,7 @@ The `leap_hand` package provides tools to control the LEAP Hand, with enhancemen
 
 ### Controller Features
 
-- **Simulation-Aligned Values**: The controller uses LEAP Hand simulation conventions, where all joints set to 0 means the hand is fully open. This ensures consistency between simulation and physical control. 
+- **Simulation-Aligned Values**: The controller uses LEAP Hand simulation conventions, where all joints set to 0 means the hand is fully open. This ensures consistency between simulation and physical control. These values are the ones normally used in programs like Isaac Sim. 
 - **Joint Limit Enforcement**: Target positions are automatically clipped to the URDF-defined joint limits, preventing invalid commands.
 
 ### Position Control
