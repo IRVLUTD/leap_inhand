@@ -94,11 +94,7 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 ---
 
 
-# Leap Hand API Original Readme:
-## Welcome to the LEAP Hand SDK
-- Please visit [our website](http://leaphand.com/) for more information about LEAP hand.
-#### Software Setup
-- Please see the [Python API](https://github.com/leap-hand/LEAP_Hand_API/tree/main/python), [ROS API](https://github.com/leap-hand/LEAP_Hand_API/tree/main/ros_module), [ROS2 API](https://github.com/leap-hand/LEAP_Hand_API/tree/main/ros2_module), [Useful Tools](https://github.com/leap-hand/LEAP_Hand_API/tree/main/useful_tools) folders for software specific details.
+# Leap Hand API Original Readme Helpful Notes:
 
 #### Hardware Setup
 - Connect 5v power to the hand (the dynamixels should light up during boot up.)
@@ -109,8 +105,6 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 - To improve latency on Ubuntu try these tips.   Configure [USB Latency Settings in Ubuntu](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/) and the [Dynamixel Python SDK](https://github.com/ROBOTIS-GIT/DynamixelSDK/issues/288) and set the Return Delay Time  (Control Table Register 9 in Dynamixel Wizard) from 250 µs to 0 µs.
 
 #### Functionality
-- Leap Node allows you to command joint angles in different scalings.
-- You can read position, velocity and current from the hand.  
 - Do not query reads too often, going past 90hz for one set of angles or 30hz for all three will slow down the USB communication.
 - The default controller follows the PID control, up to the current limit cap. 
 - Other controllers including velocity control or current control are supported as per the [motor manual](https://emanual.robotis.com/docs/en/dxl/x/xc330-m288/)
@@ -128,14 +122,7 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 - If you feel the motors are too inaccurate, you can also try raising the P and D values.
 
 
-#### Useful Tools:
-- MANO to LEAP joint angle mapping.
-- If you have useful tools you feel the community can benefit from, please make a pull request.
-- Please see the code from [Bimanual Dexterity for Complex Tasks](https://bidex-teleop.github.io/) to use Manus gloves with LEAP Hand.
-- I can also add tools to this upon request.  :)
-
 #### Support:
-- Please contact me at kshaw2@andrew.cmu.edu for any issues.
 - This code is made available using an MIT License.
 - The CAD files are provided with a CC BY-NC-SA Attribution-NonCommercial-ShareAlike license which allows you to use and build upon our work non-commercially.
 - LEAP Hand is provided as-is and without warranty.
