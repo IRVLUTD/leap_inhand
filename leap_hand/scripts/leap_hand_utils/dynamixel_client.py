@@ -217,19 +217,19 @@ class DynamixelClient:
 
     def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the current positions and velocities."""
-        return self._pos_vel_cur_reader.read()
+        return self._pos_vel_cur_reader.read(retries = 5)
     def read_pos_vel(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the current positions and velocities."""
-        return self._pos_vel_reader.read()
+        return self._pos_vel_reader.read(retries = 5)
     def read_pos(self) -> np.ndarray:
         """Returns the current positions and velocities."""
-        return self._pos_reader.read()
+        return self._pos_reader.read(retries = 5)
     def read_vel(self) -> np.ndarray:
         """Returns the current positions and velocities."""
-        return self._vel_reader.read()
+        return self._vel_reader.read(retries = 5)
     def read_cur(self) -> np.ndarray:
         """Returns the current positions and velocities."""
-        return self._cur_reader.read()
+        return self._cur_reader.read(retries = 5)
 
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray):
