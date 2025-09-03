@@ -26,10 +26,10 @@ from leap_hand.srv import *
 class LeapNode:
     def __init__(self):
         ####Some parameters to control the hand #! Reduce PD values for less jittery control, Increase for more strength
-        self.kP = float(rospy.get_param('/leaphand_node/kP', 800.0)) 
-        self.kI = float(rospy.get_param('/leaphand_node/kI', 80.0))
-        self.kD = float(rospy.get_param('/leaphand_node/kD', 200.0))
-        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 550.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
+        self.kP = float(rospy.get_param('/leaphand_node/kP', 500.0)) 
+        self.kI = float(rospy.get_param('/leaphand_node/kI', 0.0))
+        self.kD = float(rospy.get_param('/leaphand_node/kD', 50.0))
+        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 600.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
         
         # Internal state variables
@@ -59,7 +59,7 @@ class LeapNode:
         # Enables position-current control mode, it commands a position and then caps the current so the motors don't overload
         self.dxl_client.sync_write(motors, np.ones(len(motors))*5, 11, 1)
         self.dxl_client.sync_write(motors, np.zeros(len(motors)), 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write(motors, np.ones(len(motors))*350, 112, 4) # Velocity 
+        self.dxl_client.sync_write(motors, np.ones(len(motors))*125, 112, 4) # Velocity 
         self.dxl_client.sync_write(motors, np.ones(len(motors))*0, 108, 4) # Acceleration
         self.dxl_client.set_torque_enabled(motors, True)
 
