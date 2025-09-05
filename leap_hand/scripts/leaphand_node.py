@@ -4,8 +4,9 @@ import rospy
 import rospkg
 import os
 import sys
+import time
 
-
+import threading
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
@@ -24,14 +25,16 @@ from leap_hand.srv import *
 
 
 class LeapNode:
-    def __init__(self):
+    def __init__(self, frequency ):
         ####Some parameters to control the hand #! Reduce PD values for less jittery control, Increase for more strength
         self.kP = float(rospy.get_param('/leaphand_node/kP', 500.0)) 
         self.kI = float(rospy.get_param('/leaphand_node/kI', 0.0))
         self.kD = float(rospy.get_param('/leaphand_node/kD', 50.0))
         self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 600.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
-        
+        self.frequency = frequency
+        self.lock = threading.Lock()
+
         # Internal state variables
         self.latest_pos = np.zeros(16)
         self.latest_vel = np.zeros(16)
@@ -81,31 +84,49 @@ class LeapNode:
             time.sleep(1.0) # Wait before reading positions
 
             # Read initial state from hardware after delay
-            output = self.dxl_client.read_pos_vel_cur()
+            output = self.dxl_client.read_pos_vel()
             self.latest_pos = output[0] - np.pi
             self.latest_vel = output[1]
-            self.latest_eff = output[2]
 
             # Setup timer for periodic publishing (60 Hz default)
-            self.publish_rate = float(rospy.get_param('/leaphand_node/publish_rate', 60.0))
+            self.publish_rate = float(rospy.get_param('/leaphand_node/publish_rate', self.frequency))
             self.publish_timer = rospy.Timer(rospy.Duration(1.0 / self.publish_rate), self.publish_state)
 
             # Initialize services after everything is ready
             rospy.Service('leap_position', leap_position, self.pos_srv)
             rospy.Service('leap_velocity', leap_velocity, self.vel_srv)
-            rospy.Service('leap_effort', leap_effort, self.eff_srv)
+            # rospy.Service('leap_effort', leap_effort, self.eff_srv)
             rospy.Service('leap_pos_vel', leap_pos_vel, self.pos_vel_srv)
-            rospy.Service('leap_pos_vel_eff', leap_pos_vel_eff, self.pos_vel_eff_srv)
+            # rospy.Service('leap_pos_vel_eff', leap_pos_vel_eff, self.pos_vel_eff_srv)
 
             # Publish state of hand every time you fullfill a service
             self.state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=10)
+            self.rate = rospy.Rate(self.frequency)
+
+            self.read_thread = threading.Thread(target=self.read_loop)
+            self.read_thread.start()
+            self.read_thread.daemon = True  
             
             while not rospy.is_shutdown():
                 rospy.spin()
         finally:
             self.dxl_client.set_torque_enabled(motors, False)
 
-    
+    def read_loop(self):
+        """Runs at 60Hz to read hardware and send commands"""
+        while not rospy.is_shutdown():
+            try:
+                with self.lock:
+                    # Read hardware
+                    pos, vel = self.dxl_client.read_pos_vel() #! R event
+                    self.latest_pos = pos - np.pi
+                    self.latest_vel = vel
+                    time.sleep(1/self.frequency)
+                    
+            except Exception as e:
+                rospy.logerr(f"Hardware communication error: {e}")
+            
+            
 
     # Receive LEAP pose and directly control the robot.  Fully open here is 180 and increases in this value closes the hand.
     def _receive_pose(self, pose):
@@ -116,7 +137,10 @@ class LeapNode:
         
         # Add offset so it is alligned with the simulation LeapHand
         self.curr_pos = pose + np.pi
-        self.dxl_client.write_desired_pos(self.motors, self.curr_pos)
+        with self.lock:
+            self.dxl_client.write_desired_pos(self.motors, self.curr_pos)
+            time.sleep(1/self.frequency)
+
 
     def set_initial_position(self, pose):
         # Clip pose with limits (Current control does not enforce them)
@@ -125,41 +149,37 @@ class LeapNode:
         
         # Add offset so it is alligned with the simulation LeapHand
         self.curr_pos = pose + np.pi
-        self.dxl_client.write_desired_pos(self.motors, self.curr_pos)
+        with self.lock:
+            self.dxl_client.write_desired_pos(self.motors, self.curr_pos)
+            time.sleep(1/self.frequency)
+
 
 
     #Service that reads and returns the pos of the robot in regular LEAP Embodiment scaling.
     def pos_srv(self, req):
-        pos = self.dxl_client.read_pos()
-        self.latest_pos = pos - np.pi
         return {"position": self.latest_pos}
 
     #Service that reads and returns the vel of the robot in LEAP Embodiment
     def vel_srv(self, req):
-        vel = self.dxl_client.read_vel()
-        self.latest_vel = vel
         return {"velocity": self.latest_vel}
 
-    #Service that reads and returns the effort/current of the robot in LEAP Embodiment
-    def eff_srv(self, req):
-        eff = self.dxl_client.read_cur()
-        self.latest_eff = eff
-        return {"effort": self.latest_eff}
+    # #Service that reads and returns the effort/current of the robot in LEAP Embodiment
+    # def eff_srv(self, req):
+    #     eff = self.dxl_client.read_cur()
+    #     self.latest_eff = eff
+    #     return {"effort": self.latest_eff}
 
     #Use these combined services to save a lot of latency if you need multiple datapoints
     def pos_vel_srv(self, req):
-        pos, vel = self.dxl_client.read_pos_vel()
-        self.latest_pos = pos - np.pi
-        self.latest_vel = vel
         return {"position": self.latest_pos, "velocity": self.latest_vel}
 
-    #Use these combined services to save a lot of latency if you need multiple datapoints
-    def pos_vel_eff_srv(self, req):
-        pos, vel, eff = self.dxl_client.read_pos_vel_cur()
-        self.latest_pos = pos - np.pi
-        self.latest_vel = vel
-        self.latest_eff = eff
-        return {"position": self.latest_pos, "velocity": self.latest_vel, "effort": self.latest_eff}
+    # #Use these combined services to save a lot of latency if you need multiple datapoints
+    # def pos_vel_eff_srv(self, req):
+    #     pos, vel, eff = self.dxl_client.read_pos_vel_cur()
+    #     self.latest_pos = pos - np.pi
+    #     self.latest_vel = vel
+    #     self.latest_eff = eff
+    #     return {"position": self.latest_pos, "velocity": self.latest_vel, "effort": self.latest_eff}
 
     def publish_state(self, event=None):
         """Publish the current internal state without reading from hardware."""
@@ -171,7 +191,33 @@ class LeapNode:
         state.effort = self.latest_eff
         self.state_pub.publish(state)
 
+import argparse
+def make_args():
+    parser = argparse.ArgumentParser(
+        description="Process the args"
+    )
+
+    parser.add_argument(
+        "--frequency",
+        type=float,
+        default=60.0, 
+        help="Frequency for Reading the Motor position and velocity",
+    )
+
+    args = parser.parse_args()
+    return args
 
 if __name__ == "__main__":
+    rospy.init_node('leap_hand_direct_joint_RL', anonymous=True)
+    rate = rospy.Rate(120)  # 120 Hz loop rate
+    
+    # Filter Ros Args
+    ros_args = [arg for arg in sys.argv if arg.startswith('__')]
+    clean_argv = [arg for arg in sys.argv if not arg.startswith('__')]
+
+    # Temporarily replace sys.argv to exclude ROS arguments
+    sys.argv = clean_argv
+    args = make_args()
+
     rospy.init_node("leaphand_node")
-    leaphand_node = LeapNode()
+    leaphand_node = LeapNode(args.frequency)

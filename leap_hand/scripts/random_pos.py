@@ -9,12 +9,13 @@ import time
 def main():
     rospy.init_node('leap_hand_random_position', anonymous=True)
     pub = rospy.Publisher('/leaphand_node/cmd_leap', JointState, queue_size=10)
-    frequency = rospy.get_param('~frequency', 1.0)  # Hz
-    rate = rospy.Rate(frequency)
+    # frequency = rospy.get_param('~frequency', 60.0)  # Hz
+    # rate = rospy.Rate(frequency)
 
     joint_names = [f"joint_{i}" for i in range(16)]
-    state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=10)
+    # state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=10)
     pos_vel_service = '/leap_pos_vel'
+
     # Wait for services to be available
     rospy.wait_for_service(pos_vel_service)
     
@@ -45,9 +46,7 @@ def main():
     while not rospy.is_shutdown():
         try:
             input("Press Enter to send a new random position...")
-            for i in range(5):
-                response = get_pos_vel()
-                time.sleep(0.03)
+            response = get_pos_vel()
             # Create and populate JointState message
             state = JointState()
             state.header.stamp = rospy.Time.now()
@@ -57,21 +56,20 @@ def main():
             state.effort = []  
             
             # Publish the message
-            state_pub.publish(state)
+            # state_pub.publish(state)
 
             curr_pos = np.array(response.position)
             e = curr_target - curr_pos
             print("Target:", curr_target)
             print("Actual Position:", curr_pos)
             print("Average Joint Positional error: ", np.sum(e)/16)
-            time.sleep(1)
-
+            input()
         except KeyboardInterrupt:
             break
 
         # Generate random positions for non-fixed joints
         positions = np.random.uniform(min_limits, max_limits, size=16)
-        positions = positions * 0.3
+        positions = positions * 0.5
         
         # Set fixed joints
         for idx, value in fixed_joints.items():
