@@ -27,10 +27,10 @@ from leap_hand.srv import *
 class LeapNode:
     def __init__(self, frequency ):
         ####Some parameters to control the hand #! Reduce PD values for less jittery control, Increase for more strength
-        self.kP = float(rospy.get_param('/leaphand_node/kP', 500.0)) 
+        self.kP = float(rospy.get_param('/leaphand_node/kP', 800.0)) 
         self.kI = float(rospy.get_param('/leaphand_node/kI', 0.0))
-        self.kD = float(rospy.get_param('/leaphand_node/kD', 50.0))
-        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 600.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
+        self.kD = float(rospy.get_param('/leaphand_node/kD', 200.0))
+        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 550.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
         self.frequency = frequency
         self.lock = threading.Lock()
@@ -104,8 +104,8 @@ class LeapNode:
             self.rate = rospy.Rate(self.frequency)
 
             self.read_thread = threading.Thread(target=self.read_loop)
-            self.read_thread.start()
             self.read_thread.daemon = True  
+            self.read_thread.start()
             
             while not rospy.is_shutdown():
                 rospy.spin()
@@ -208,9 +208,6 @@ def make_args():
     return args
 
 if __name__ == "__main__":
-    rospy.init_node('leap_hand_direct_joint_RL', anonymous=True)
-    rate = rospy.Rate(120)  # 120 Hz loop rate
-    
     # Filter Ros Args
     ros_args = [arg for arg in sys.argv if arg.startswith('__')]
     clean_argv = [arg for arg in sys.argv if not arg.startswith('__')]

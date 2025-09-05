@@ -63,7 +63,6 @@ def main():
             print("Target:", curr_target)
             print("Actual Position:", curr_pos)
             print("Average Joint Positional error: ", np.sum(e)/16)
-            input()
         except KeyboardInterrupt:
             break
 
