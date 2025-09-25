@@ -41,7 +41,7 @@ class LeapNode:
         self.latest_eff = np.zeros(16)
 
         #subscribes to a variety of sources that can command the hand, and creates services that can give information about the hand out
-        rospy.Subscriber("/leaphand_node/cmd_leap", JointState, self._receive_pose)
+        rospy.Subscriber("/leaphand_node/cmd_leap", JointState, self._receive_pose, queue_size=1)
 
         #You can put the correct port here or have the node auto-search for a hand at the first 3 ports.
         # For example ls /dev/serial/by-id/* to find your LEAP Hand. Then use the result.  
