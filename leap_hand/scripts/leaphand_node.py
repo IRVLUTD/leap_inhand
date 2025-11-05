@@ -8,7 +8,7 @@ import time
 
 import threading
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import String, Header
 
 from leap_hand_utils.dynamixel_client import *
 import leap_hand_utils.leap_hand_utils as lhu
@@ -26,11 +26,12 @@ from leap_hand.srv import *
 
 class LeapNode:
     def __init__(self, frequency ):
+        self.timingpub = rospy.Publisher("/timing", Header, queue_size=1)
         ####Some parameters to control the hand #! Reduce PD values for less jittery control, Increase for more strength
-        self.kP = float(rospy.get_param('/leaphand_node/kP', 800.0)) 
+        self.kP = float(rospy.get_param('/leaphand_node/kP', 0.0)) 
         self.kI = float(rospy.get_param('/leaphand_node/kI', 0.0))
-        self.kD = float(rospy.get_param('/leaphand_node/kD', 200.0))
-        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 550.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
+        self.kD = float(rospy.get_param('/leaphand_node/kD', 0.0))
+        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 10.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
         self.frequency = frequency
         self.lock = threading.Lock()
@@ -68,11 +69,12 @@ class LeapNode:
 
         # Set parameters for PID control
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kP, 84, 2) # Pgain stiffness     
-        self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
+        self.dxl_client.sync_write(motors, np.zeros(len(motors)), 88, 2) # FF Gain     
+        self.dxl_client.sync_write(motors, np.zeros(len(motors)), 90, 2) # FF2 Gain     
+        # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kI, 82, 2) # Igain
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kD, 80, 2) # Dgain damping
-        self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
-
+        # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
         #Max at current (in unit 1mA) so don't overheat and grip too hard #500 normal or #350 for lite
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.curr_lim, 102, 2)
 
@@ -100,7 +102,7 @@ class LeapNode:
             # rospy.Service('leap_pos_vel_eff', leap_pos_vel_eff, self.pos_vel_eff_srv)
 
             # Publish state of hand every time you fullfill a service
-            self.state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=10)
+            self.state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=1)
             self.rate = rospy.Rate(self.frequency)
 
             self.read_thread = threading.Thread(target=self.read_loop)
@@ -121,7 +123,7 @@ class LeapNode:
                     pos, vel = self.dxl_client.read_pos_vel() #! R event
                     self.latest_pos = pos - np.pi
                     self.latest_vel = vel
-                    time.sleep(1/self.frequency)
+                    self.rate.sleep()
                     
             except Exception as e:
                 rospy.logerr(f"Hardware communication error: {e}")
@@ -139,8 +141,11 @@ class LeapNode:
         self.curr_pos = pose + np.pi
         with self.lock:
             self.dxl_client.write_desired_pos(self.motors, self.curr_pos)
-            time.sleep(1/self.frequency)
-
+            # print timestamp that the servos received a command
+            msg = Header()
+            msg.stamp = rospy.Time.now()
+            self.timingpub.publish(msg)
+            self.rate.sleep()
 
     def set_initial_position(self, pose):
         # Clip pose with limits (Current control does not enforce them)
@@ -171,6 +176,9 @@ class LeapNode:
 
     #Use these combined services to save a lot of latency if you need multiple datapoints
     def pos_vel_srv(self, req):
+        # pos, vel = self.dxl_client.read_pos_vel() #! R event
+        # self.latest_pos = pos - np.pi
+        # self.latest_vel = vel
         return {"position": self.latest_pos, "velocity": self.latest_vel}
 
     # #Use these combined services to save a lot of latency if you need multiple datapoints
