@@ -31,7 +31,7 @@ class LeapNode:
         self.kP = float(rospy.get_param('/leaphand_node/kP', 0.0)) 
         self.kI = float(rospy.get_param('/leaphand_node/kI', 0.0))
         self.kD = float(rospy.get_param('/leaphand_node/kD', 0.0))
-        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 10.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
+        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 0.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
         self.frequency = frequency
         self.lock = threading.Lock()
@@ -39,10 +39,7 @@ class LeapNode:
         # Internal state variables
         self.latest_pos = np.zeros(16)
         self.latest_vel = np.zeros(16)
-        self.latest_eff = np.zeros(16)
-
-        #subscribes to a variety of sources that can command the hand, and creates services that can give information about the hand out
-        rospy.Subscriber("/leaphand_node/cmd_leap", JointState, self._receive_pose, queue_size=1)
+        self.latest_eff = np.zeros(16)        
 
         #You can put the correct port here or have the node auto-search for a hand at the first 3 ports.
         # For example ls /dev/serial/by-id/* to find your LEAP Hand. Then use the result.  
@@ -105,16 +102,20 @@ class LeapNode:
             self.state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=1)
             self.rate = rospy.Rate(self.frequency)
 
-            self.read_thread = threading.Thread(target=self.read_loop)
+            self.read_thread = threading.Thread(target=self.read_process)
             self.read_thread.daemon = True  
             self.read_thread.start()
+
+            self.write_thread = threading.Thread(target=self.write_process)
+            self.write_thread.daemon = True  
+            self.write_thread.start()
             
             while not rospy.is_shutdown():
                 rospy.spin()
         finally:
             self.dxl_client.set_torque_enabled(motors, False)
 
-    def read_loop(self):
+    def read_process(self):
         """Runs at 60Hz to read hardware and send commands"""
         while not rospy.is_shutdown():
             try:
@@ -127,8 +128,13 @@ class LeapNode:
                     
             except Exception as e:
                 rospy.logerr(f"Hardware communication error: {e}")
-            
-            
+    
+    def write_process(self):
+        # Subscribes to a variety of sources that can command the hand, and creates services that can give information about the hand out
+        rospy.Subscriber("/leaphand_node/cmd_leap", JointState, self._receive_pose, queue_size=1)
+        """Waits for a write command and sends it to hardware"""
+        while not rospy.is_shutdown():
+            rospy.spin()
 
     # Receive LEAP pose and directly control the robot.  Fully open here is 180 and increases in this value closes the hand.
     def _receive_pose(self, pose):
