@@ -60,7 +60,7 @@ class LeapNode:
         # Enables position-current control mode, it commands a position and then caps the current so the motors don't overload
         self.dxl_client.sync_write(motors, np.ones(len(motors))*5, 11, 1)
         self.dxl_client.sync_write(motors, np.zeros(len(motors)), 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write(motors, np.ones(len(motors))*125, 112, 4) # Velocity 
+        self.dxl_client.sync_write(motors, np.ones(len(motors))*65, 112, 4) # Velocity 
         self.dxl_client.sync_write(motors, np.ones(len(motors))*0, 108, 4) # Acceleration
         self.dxl_client.set_torque_enabled(motors, True)
 
@@ -110,10 +110,17 @@ class LeapNode:
             self.write_thread.daemon = True  
             self.write_thread.start()
             
-            while not rospy.is_shutdown():
-                rospy.spin()
-        finally:
-            self.dxl_client.set_torque_enabled(motors, False)
+            rospy.on_shutdown(self.shutdown_hook)
+            rospy.spin()
+        except Exception as e:
+            rospy.logerr(f"Initialization error: {e}")
+
+    def shutdown_hook(self):
+        rospy.loginfo("Shutting down LeapNode, disabling torque...")
+        try:
+            self.dxl_client.set_torque_enabled(self.motors, False)
+        except Exception as e:
+            rospy.logerr(f"Error during shutdown: {e}")
 
     def read_process(self):
         """Runs at 60Hz to read hardware and send commands"""
@@ -124,23 +131,22 @@ class LeapNode:
                     pos, vel = self.dxl_client.read_pos_vel() #! R event
                     self.latest_pos = pos - np.pi
                     self.latest_vel = vel
-                    self.rate.sleep()
-                    
+                self.rate.sleep()
             except Exception as e:
-                rospy.logerr(f"Hardware communication error: {e}")
+                if not rospy.is_shutdown():
+                    rospy.logerr(f"Hardware communication error: {e}")
     
     def write_process(self):
         # Subscribes to a variety of sources that can command the hand, and creates services that can give information about the hand out
         rospy.Subscriber("/leaphand_node/cmd_leap", JointState, self._receive_pose, queue_size=1)
-        """Waits for a write command and sends it to hardware"""
-        while not rospy.is_shutdown():
-            rospy.spin()
+        # Just wait for shutdown, the subscriber works in its own thread
+        rospy.spin()
 
     # Receive LEAP pose and directly control the robot.  Fully open here is 180 and increases in this value closes the hand.
     def _receive_pose(self, pose):
         # Clip pose with limits (Current control does not enforce them)
         pose = np.array(pose.position)
-        pose = np.clip(pose, self.min, self.max)
+        # pose = np.clip(pose, self.min, self.max)
         self.prev_pos = self.curr_pos
         
         # Add offset so it is alligned with the simulation LeapHand
@@ -155,7 +161,7 @@ class LeapNode:
 
     def set_initial_position(self, pose):
         # Clip pose with limits (Current control does not enforce them)
-        pose = np.clip(pose, self.min, self.max)
+        # pose = np.clip(pose, self.min, self.max)
         self.prev_pos = self.curr_pos
         
         # Add offset so it is alligned with the simulation LeapHand
@@ -214,7 +220,7 @@ def make_args():
     parser.add_argument(
         "--frequency",
         type=float,
-        default=60.0, 
+        default=40.0, 
         help="Frequency for Reading the Motor position and velocity",
     )
 
