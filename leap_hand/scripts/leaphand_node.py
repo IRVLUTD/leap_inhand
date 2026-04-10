@@ -28,10 +28,10 @@ class LeapNode:
     def __init__(self, frequency ):
         self.timingpub = rospy.Publisher("/timing", Header, queue_size=1)
         ####Some parameters to control the hand #! Reduce PD values for less jittery control, Increase for more strength
-        self.kP = float(rospy.get_param('/leaphand_node/kP', 0.0)) 
+        self.kP = float(rospy.get_param('/leaphand_node/kP', 800.0)) 
         self.kI = float(rospy.get_param('/leaphand_node/kI', 0.0))
-        self.kD = float(rospy.get_param('/leaphand_node/kD', 0.0))
-        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 0.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
+        self.kD = float(rospy.get_param('/leaphand_node/kD', 200.0))
+        self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim', 350.0)) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
         self.frequency = frequency
         self.lock = threading.Lock()
@@ -60,20 +60,23 @@ class LeapNode:
         # Enables position-current control mode, it commands a position and then caps the current so the motors don't overload
         self.dxl_client.sync_write(motors, np.ones(len(motors))*5, 11, 1)
         self.dxl_client.sync_write(motors, np.zeros(len(motors)), 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write(motors, np.ones(len(motors))*65, 112, 4) # Velocity 
-        self.dxl_client.sync_write(motors, np.ones(len(motors))*0, 108, 4) # Acceleration
+        self.dxl_client.sync_write(motors, np.ones(len(motors))*84, 112, 4) # Velocity 
+        # self.dxl_client.sync_write(motors, np.ones(len(motors))*0, 108, 4) # Acceleration
         self.dxl_client.set_torque_enabled(motors, True)
 
         # Set parameters for PID control
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kP, 84, 2) # Pgain stiffness     
-        self.dxl_client.sync_write(motors, np.zeros(len(motors)), 88, 2) # FF Gain     
-        self.dxl_client.sync_write(motors, np.zeros(len(motors)), 90, 2) # FF2 Gain     
-        # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
+        # self.dxl_client.sync_write(motors, np.zeros(len(motors)), 88, 2) # FF Gain     
+        # self.dxl_client.sync_write(motors, np.zeros(len(motors)), 90, 2) # FF2 Gain    
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kI, 82, 2) # Igain
-        self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kD, 80, 2) # Dgain damping
-        # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
+        self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kD, 80, 2) # Dgain damping 
+        self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
+        self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
         #Max at current (in unit 1mA) so don't overheat and grip too hard #500 normal or #350 for lite
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.curr_lim, 102, 2)
+        # self.dxl_client.sync_write(motors, np.ones(len(motors)) * 325, 82, 2) # Igain
+        # self.dxl_client.sync_write(motors, np.ones(len(motors)) * 3, 80, 2) # Dgain damping
+        # self.dxl_client.sync_write(motors, np.ones(len(motors)) * 150, 102, 2)
 
         # Get Min and max
         self.min, self.max = lhu.LEAP_limits()
