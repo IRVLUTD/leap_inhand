@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
+import os
+
 import rospy
 import numpy as np
 from sensor_msgs.msg import JointState
 import leap_hand_utils.leap_hand_utils as lhu
-from leap_hand.srv import leap_pos_vel
+from leap_hand.srv import leap_pos_vel_eff
 import time
+import csv
 
 def main():
     rospy.init_node('leap_hand_random_position', anonymous=True)
+    rate = rospy.Rate(20)
     pub = rospy.Publisher('/leaphand_node/cmd_leap', JointState, queue_size=10)
     # frequency = rospy.get_param('~frequency', 60.0)  # Hz
     # rate = rospy.Rate(frequency)
 
     joint_names = [f"joint_{i}" for i in range(16)]
     # state_pub = rospy.Publisher('/leap_hand_state', JointState, queue_size=10)
-    pos_vel_service = '/leap_pos_vel'
+    pos_vel_service = '/leap_pos_vel_eff'
 
     # Wait for services to be available
     rospy.wait_for_service(pos_vel_service)
     
     # Create service proxies
-    get_pos_vel = rospy.ServiceProxy(pos_vel_service, leap_pos_vel)
+    get_pos_vel_eff = rospy.ServiceProxy(pos_vel_service, leap_pos_vel_eff)
     
     # Get joint limits
     min_limits, max_limits = lhu.LEAP_limits()
@@ -43,50 +47,89 @@ def main():
     # Joint names
     joint_names = [f"joint_{i}" for i in range(16)]
     
+    kP = float(rospy.get_param('/leaphand_node/kP'))
+    # kI = float(rospy.get_param('/leaphand_node/kI'))
+    kD = float(rospy.get_param('/leaphand_node/kD'))
+    curr_lim = float(rospy.get_param('/leaphand_node/curr_lim'))
+    vel_lim = float(rospy.get_param('/leaphand_node/vel_lim'))
+
+    csv_path = os.path.expanduser(
+        f"~/Projects/UGAS_rw/src/UGAS_rw/leap_rl_control/data/data_pos_vel_eff_{kP}_{kD}_{curr_lim}_{vel_lim}.csv"
+    )
+    csv_file = open(csv_path, mode="w", newline="")
+    csv_writer = csv.writer(csv_file)
+
+    header = (
+        [
+            "time",
+            "cur_position",
+            "target_position",
+            "velocity",
+            "current"
+        ]
+    )
+    csv_writer.writerow(header)
+
+    start = time.time_ns() / 1000000.0  # Convert to milliseconds
+
+    z = 0
     while not rospy.is_shutdown():
         try:
-            input("Press Enter to send a new random position...")
-            response = get_pos_vel()
+            # input("Press Enter to read from a new random position...")
+            response = get_pos_vel_eff()
             # Create and populate JointState message
             state = JointState()
             state.header.stamp = rospy.Time.now()
             state.name = joint_names
             state.position = response.position
             state.velocity = response.velocity
-            state.effort = []  
+            state.effort = response.effort  
             
             # Publish the message
             # state_pub.publish(state)
 
             curr_pos = np.array(response.position)
             e = curr_target - curr_pos
-            print("Target:", curr_target)
-            print("Actual Position:", curr_pos)
-            print("Average Joint Positional error: ", np.sum(e)/16)
+            # print("Target:", curr_target)
+            # print("Actual Position:", curr_pos)
+            # print("Actual Velocity:", response.velocity)
+            # print("Actual Effort:", response.effort)
+            # print("Average Joint Positional error: ", np.sum(e)/16)
+
+            csv_writer.writerow((time.time_ns() / 1000000.0 - start, curr_pos, curr_target, response.velocity, response.effort))
+
+            if z % 5 == 0:
+                # Generate random positions for non-fixed joints
+                positions = np.random.uniform(min_limits, max_limits, size=16)
+                # positions = positions * 0.5
+                
+                # Set fixed joints
+                for idx, value in fixed_joints.items():
+                    positions[idx] = value
+
+                curr_target = positions.copy()
+
+                # Create JointState message
+                msg = JointState()
+                msg.header.stamp = rospy.Time.now()
+                msg.name = joint_names
+                msg.position = positions.tolist()
+                
+                # Publish
+                pub.publish(msg)
+
+                print(f"z: {z/20}")
+
+            z += 1
+            
+            # Sleep Use instead of input if you like
+            rate.sleep()
+            
+            if z >= 30*20:
+                csv_file.close() 
+                break
         except KeyboardInterrupt:
-            break
-
-        # Generate random positions for non-fixed joints
-        positions = np.random.uniform(min_limits, max_limits, size=16)
-        positions = positions * 0.5
-        
-        # Set fixed joints
-        for idx, value in fixed_joints.items():
-            positions[idx] = value
-
-        curr_target = positions.copy()
-
-        # Create JointState message
-        msg = JointState()
-        msg.header.stamp = rospy.Time.now()
-        msg.name = joint_names
-        msg.position = positions.tolist()
-        
-        # Publish
-        pub.publish(msg)
-        
-        # Sleep Use instead of input if you like
-        # rate.sleep()
+            csv_file.close()   
 
 if __name__ == '__main__':
     try:
