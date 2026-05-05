@@ -15,33 +15,33 @@ class LeapHandStatePublisher:
         self.pos_vel_service = '/leap_pos_vel'
         
         # Wait for services to be available
-        rospy.wait_for_service(self.pos_vel_service)
+        rospy.wait_for_service(self.pos_vel_service) #! Can't use this withouit managing the times ! can break other code
         
         # Create service proxies
         self.get_pos_vel = rospy.ServiceProxy(self.pos_vel_service, leap_pos_vel)
     
-    def publish_state(self):
-        # Main publishing loop
-        while not rospy.is_shutdown():
-            try:
-                # Call services to get position and velocity
-                response = self.get_pos_vel()
+    # def publish_state(self):
+    #     # Main publishing loop
+    #     while not rospy.is_shutdown():
+    #         try:
+    #             # Call services to get position and velocity
+    #             # response = self.get_pos_vel()
                 
-                # Create and populate JointState message
-                state = JointState()
-                state.header.stamp = rospy.Time.now()
-                state.name = self.joint_names
-                state.position = response.position
-                state.velocity = response.velocity
-                state.effort = []  
+    #             # # Create and populate JointState message
+    #             # state = JointState()
+    #             # state.header.stamp = rospy.Time.now()
+    #             # state.name = self.joint_names
+    #             # state.position = response.position
+    #             # state.velocity = response.velocity
+    #             # state.effort = []  
                 
-                # Publish the message
-                self.pub.publish(state)
-            except rospy.ServiceException as e:
-                rospy.logerr(f"Service call failed: {e}")
+    #             # # Publish the message
+    #             # self.pub.publish(state)
+    #         except rospy.ServiceException as e:
+    #             rospy.logerr(f"Service call failed: {e}")
             
-            # Sleep to maintain the specified frequency
-            self.rate.sleep()
+            # # Sleep to maintain the specified frequency
+            # self.rate.sleep()
 
 if __name__ == '__main__':
     # Initialize ROS node

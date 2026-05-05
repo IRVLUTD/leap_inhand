@@ -61,6 +61,7 @@ add_service_files(
     leap_effort.srv
     leap_pos_vel_eff.srv
     leap_pos_vel.srv
+    leap_pos_vel_eff_tar.srv
 )
 
 ## Generate actions in the 'action' folder

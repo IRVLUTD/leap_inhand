@@ -16,6 +16,7 @@ ADDR_PRESENT_POSITION = 132
 ADDR_PRESENT_VELOCITY = 128
 ADDR_PRESENT_CURRENT = 126
 ADDR_PRESENT_POS_VEL_CUR = 126
+ADDR_PRESENT_POS_VEL_CUR_GOAL = 116
 ADDR_PRESENT_POS_VEL = 128
 
 # Data Byte Length
@@ -23,6 +24,7 @@ LEN_PRESENT_POSITION = 4
 LEN_PRESENT_VELOCITY = 4
 LEN_PRESENT_CURRENT = 2
 LEN_PRESENT_POS_VEL_CUR = 10
+LEN_PRESENT_POS_VEL_CUR_GOAL = 20
 LEN_PRESENT_POS_VEL = 8 
 LEN_GOAL_POSITION = 4
 
@@ -125,6 +127,13 @@ class DynamixelClient:
             vel_scale=vel_scale if vel_scale is not None else DEFAULT_VEL_SCALE,
             cur_scale=cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE,
         )
+        self._pos_vel_cur_goal_reader = DynamixelPosVelCurGoalReader(
+            self,
+            self.motor_ids,
+            pos_scale=pos_scale if pos_scale is not None else DEFAULT_POS_SCALE,
+            vel_scale=vel_scale if vel_scale is not None else DEFAULT_VEL_SCALE,
+            cur_scale=cur_scale if cur_scale is not None else DEFAULT_CUR_SCALE,
+        )
         self._vel_reader = DynamixelVelReader(
             self,
             self.motor_ids,
@@ -215,21 +224,24 @@ class DynamixelClient:
             time.sleep(retry_interval)
             retries -= 1
 
-    def read_pos_vel_cur(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def read_pos_vel_cur(self, retries: int = 5) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the current positions and velocities."""
-        return self._pos_vel_cur_reader.read(retries = 5)
-    def read_pos_vel(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return self._pos_vel_cur_reader.read(retries = retries)
+    def read_pos_vel(self, retries: int = 5) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Returns the current positions and velocities."""
-        return self._pos_vel_reader.read(retries = 5)
-    def read_pos(self) -> np.ndarray:
+        return self._pos_vel_reader.read(retries = retries)
+    def read_pos(self, retries: int = 5) -> np.ndarray:
         """Returns the current positions and velocities."""
-        return self._pos_reader.read(retries = 5)
-    def read_vel(self) -> np.ndarray:
+        return self._pos_reader.read(retries = retries)
+    def read_pos_vel_cur_goal(self, retries: int = 5) -> np.ndarray:
         """Returns the current positions and velocities."""
-        return self._vel_reader.read(retries = 5)
-    def read_cur(self) -> np.ndarray:
+        return self._pos_vel_cur_goal_reader.read(retries = retries)
+    def read_vel(self, retries: int = 5) -> np.ndarray:
         """Returns the current positions and velocities."""
-        return self._cur_reader.read(retries = 5)
+        return self._vel_reader.read(retries = retries)
+    def read_cur(self, retries: int = 5) -> np.ndarray:
+        """Returns the current positions and velocities."""
+        return self._cur_reader.read(retries = retries)
 
     def write_desired_pos(self, motor_ids: Sequence[int],
                           positions: np.ndarray):
@@ -387,12 +399,12 @@ class DynamixelReader:
 
     def read(self, retries: int = 1):
         """Reads data from the motors."""
-        self.client.check_connected()
+        # self.client.check_connected()
         success = False
         while not success and retries >= 0: #! Retries
-            # comm_result = self.operation.txRxPacket()
             try:
                 comm_result = self.operation.fastSyncRead()
+                # comm_result = self.operation.txRxPacket()
             except Exception as e:
                 logging.error(f'Exception during bulk read: {e}')
                 comm_result = self.operation.txRxPacket()
@@ -549,6 +561,56 @@ class DynamixelPosReader(DynamixelReader):
     def _get_data(self):
         """Returns a copy of the data."""
         return self._pos_data.copy()
+    
+class DynamixelPosVelCurGoalReader(DynamixelReader):
+    """Reads positions, currents and velocities."""
+
+    def __init__(self,
+                 client: DynamixelClient,
+                 motor_ids: Sequence[int],
+                 pos_scale: float = 1.0,
+                 vel_scale: float = 1.0,
+                 cur_scale: float = 1.0):
+        super().__init__(
+            client,
+            motor_ids,
+            address=ADDR_PRESENT_POS_VEL_CUR_GOAL,
+            size=LEN_PRESENT_POS_VEL_CUR_GOAL,
+        )
+        self.pos_scale = pos_scale
+        self.vel_scale = vel_scale
+        self.cur_scale = cur_scale
+
+    def _initialize_data(self):
+        """Initializes the cached data."""
+        self._pos_data = np.zeros(len(self.motor_ids), dtype=np.float32)
+        self._vel_data = np.zeros(len(self.motor_ids), dtype=np.float32)
+        self._cur_data = np.zeros(len(self.motor_ids), dtype=np.float32)
+        self._goal_data = np.zeros(len(self.motor_ids), dtype=np.float32)
+
+    def _update_data(self, index: int, motor_id: int):
+        """Updates the data index for the given motor ID."""
+        cur = self.operation.getData(motor_id, ADDR_PRESENT_CURRENT,
+                                     LEN_PRESENT_CURRENT)
+        vel = self.operation.getData(motor_id, ADDR_PRESENT_VELOCITY,
+                                     LEN_PRESENT_VELOCITY)
+        pos = self.operation.getData(motor_id, ADDR_PRESENT_POSITION,
+                                     LEN_PRESENT_POSITION)
+        goal = self.operation.getData(motor_id, ADDR_GOAL_POSITION,
+                                     LEN_GOAL_POSITION)
+        cur = unsigned_to_signed(cur, size=2)
+        vel = unsigned_to_signed(vel, size=4)
+        pos = unsigned_to_signed(pos, size=4)
+        goal = unsigned_to_signed(goal, size=4)
+        self._pos_data[index] = float(pos) * self.pos_scale
+        self._goal_data[index] = float(goal) * self.pos_scale
+        self._vel_data[index] = float(vel) * self.vel_scale
+        self._cur_data[index] = float(cur) * self.cur_scale
+
+    def _get_data(self):
+        """Returns a copy of the data."""
+        return (self._pos_data.copy(), self._vel_data.copy(),
+                self._cur_data.copy(), self._goal_data.copy())
 
 class DynamixelVelReader(DynamixelReader):
     """Reads positions and velocities."""
