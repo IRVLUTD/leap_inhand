@@ -33,6 +33,7 @@ class LeapNode:
         self.kI = float(rospy.get_param('/leaphand_node/kI'))
         self.kD = float(rospy.get_param('/leaphand_node/kD'))
         self.curr_lim = float(rospy.get_param('/leaphand_node/curr_lim')) #don't go past 600ma on this, or it'll overcurrent sometimes for regular, 350ma for lite.
+        self.vel_lim = float(rospy.get_param('/leaphand_node/vel_lim'))
         self.prev_pos = self.pos = self.curr_pos = np.zeros(16)
         self.frequency = frequency
         self.lock = threading.Lock()
@@ -72,12 +73,15 @@ class LeapNode:
         # Enables position-current control mode, it commands a position and then caps the current so the motors don't overload
         self.dxl_client.sync_write(motors, np.ones(len(motors))*5, 11, 1)
         self.dxl_client.sync_write(motors, np.ones(len(motors))*100, 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write([0,1,2,3], np.ones(4)*25, 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write([4,5,6,7], np.ones(4)*100, 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write([8,9,10,11], np.ones(4)*175, 9, 1) # Set return time delay to 0
-        self.dxl_client.sync_write([12,13,14,15], np.ones(4)*250, 9, 1) # Set return time delay to 0
+        # self.dxl_client.sync_write([0,1,2,3], np.ones(4)*25, 9, 1) # Set return time delay to 0
+        # self.dxl_client.sync_write([4,5,6,7], np.ones(4)*100, 9, 1) # Set return time delay to 0
+        # self.dxl_client.sync_write([8,9,10,11], np.ones(4)*175, 9, 1) # Set return time delay to 0
+        # self.dxl_client.sync_write([12,13,14,15], np.ones(4)*250, 9, 1) # Set return time delay to 0
         # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
-        self.dxl_client.sync_write(motors, np.ones(len(motors))*float(rospy.get_param('/leaphand_node/vel_lim')), 112, 4) # Velocity 
+        self.dxl_client.sync_write(motors, np.ones(len(motors))*self.vel_lim, 112, 4) # Velocity 
+        # self.dxl_client.sync_write([1,5,9,12], np.ones(4) * (self.vel_lim * 0.75), 112, 4) # Dgain ve for side to side should be a bit less
+        # self.dxl_client.sync_write([0,4,8,13], np.ones(len(motors))*float(rospy.get_param('/leaphand_node/vel_lim'))*1.2, 112, 4) # Velocity 
+        # self.dxl_client.sync_write([1,5,9,12], np.ones(len(motors))*float(rospy.get_param('/leaphand_node/vel_lim'))*0.75, 112, 4) # Velocity 
         # self.dxl_client.sync_write(motors, np.ones(len(motors))*0, 108, 4) # Acceleration
         self.dxl_client.set_torque_enabled(motors, True)
 
@@ -87,8 +91,9 @@ class LeapNode:
         # self.dxl_client.sync_write(motors, np.zeros(len(motors)), 90, 2) # FF2 Gain    
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kI, 82, 2) # Igain
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kD, 80, 2) # Dgain damping 
-        # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
-        # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
+        self.dxl_client.sync_write([0,4,8,13], np.ones(4) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
+        self.dxl_client.sync_write([0,4,8,13], np.ones(4) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
+        self.dxl_client.sync_write([0,4,8,13], np.ones(4) * (self.kD * 0.75), 80, 2) # Dgain ve for side to side should be a bit less
         #Max at current (in unit 1mA) so don't overheat and grip too hard #500 normal or #350 for lite
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.curr_lim, 102, 2)
         # self.dxl_client.sync_write(motors, np.ones(len(motors)) * 325, 82, 2) # Igain
@@ -201,7 +206,7 @@ class LeapNode:
         self.latest_tar = goal -  np.pi
 
     
-    def write_process(self):
+    def write_process(self):    
         # Subscribes to a variety of sources that can command the hand, and creates services that can give information about the hand out
         rospy.Subscriber("/leaphand_node/cmd_leap", JointState, self._receive_pose, queue_size=10)
         # Just wait for shutdown, the subscriber works in its own thread
@@ -228,6 +233,7 @@ class LeapNode:
         self.timingpub.publish(msg)
         end = time.perf_counter()
         print(f"Write process latency: {(end - start) * 1000:.2f} ms")
+        # print(f"Write : {pose} ")
         # self.rate.sleep()
 
     def set_initial_position(self, pose):
