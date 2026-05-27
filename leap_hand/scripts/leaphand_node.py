@@ -79,6 +79,7 @@ class LeapNode:
         # self.dxl_client.sync_write([12,13,14,15], np.ones(4)*250, 9, 1) # Set return time delay to 0
         # self.dxl_client.sync_write([0,4,8], np.ones(3) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
         self.dxl_client.sync_write(motors, np.ones(len(motors))*self.vel_lim, 112, 4) # Velocity 
+        # self.dxl_client.sync_write([12,13,14,15], np.ones(len(motors))*self.vel_lim*0.5, 112, 4) # Velocity 
         # self.dxl_client.sync_write([1,5,9,12], np.ones(4) * (self.vel_lim * 0.75), 112, 4) # Dgain ve for side to side should be a bit less
         # self.dxl_client.sync_write([0,4,8,13], np.ones(len(motors))*float(rospy.get_param('/leaphand_node/vel_lim'))*1.2, 112, 4) # Velocity 
         # self.dxl_client.sync_write([1,5,9,12], np.ones(len(motors))*float(rospy.get_param('/leaphand_node/vel_lim'))*0.75, 112, 4) # Velocity 
@@ -93,7 +94,6 @@ class LeapNode:
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.kD, 80, 2) # Dgain damping 
         self.dxl_client.sync_write([0,4,8,13], np.ones(4) * (self.kP * 0.75), 84, 2) # Pgain stiffness for side to side should be a bit less
         self.dxl_client.sync_write([0,4,8,13], np.ones(4) * (self.kD * 0.75), 80, 2) # Dgain damping for side to side should be a bit less
-        self.dxl_client.sync_write([0,4,8,13], np.ones(4) * (self.kD * 0.75), 80, 2) # Dgain ve for side to side should be a bit less
         #Max at current (in unit 1mA) so don't overheat and grip too hard #500 normal or #350 for lite
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * self.curr_lim, 102, 2)
         # self.dxl_client.sync_write(motors, np.ones(len(motors)) * 325, 82, 2) # Igain
