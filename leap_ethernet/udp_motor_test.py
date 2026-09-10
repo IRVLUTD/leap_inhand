@@ -1,5 +1,4 @@
 import csv
-from http import client
 import random
 import statistics
 import time
@@ -162,16 +161,16 @@ def main() -> None:
     client = ControlTableClient(UDP_IP, UDP_PORT, TIMEOUT, "udp_motor_log.csv")
     try:
         print(f"Setting current limit of all motors to {150} mA")
-        client.write_all(DataNames.CURRENT_LIMIT, [150] * 16)
+        client.write_all(DataNames.CURRENT_LIMIT, [150] * MOTOR_COUNT)
         
         print(f"Setting motors to position mode")
-        client.write_all(DataNames.OPERATING_MODE, [3] * 16)
+        client.write_all(DataNames.OPERATING_MODE, [3] * MOTOR_COUNT)
 
         print(f"Enabling torque on all motors")
-        client.write_all(DataNames.TORQUE_ENABLE, [1] * 16)
+        client.write_all(DataNames.TORQUE_ENABLE, [1] * MOTOR_COUNT)
 
         print(f"Setting all goal positions to {2048}")
-        client.write_all(DataNames.GOAL_POSITION, [2048] * 16)
+        client.write_all(DataNames.GOAL_POSITION, [2048] * MOTOR_COUNT)
 
         print(
             f"Running {WARMUP_COUNT} warm-up position reads "
@@ -213,7 +212,7 @@ def main() -> None:
         print(f"\nLoop completed in {loop_elapsed:.3f} seconds")
         print(f"Loop speed: {TEST_COUNT / loop_elapsed:.2f} iterations/second")
     finally:
-        client.write_all(DataNames.TORQUE_ENABLE, [0] * 16)
+        client.write_all(DataNames.TORQUE_ENABLE, [0] * MOTOR_COUNT)
         client.close()
 
     plot_iteration_times(iteration_times)
