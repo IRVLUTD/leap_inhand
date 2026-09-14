@@ -1,29 +1,53 @@
 """Send control-table commands to an OpenRB-150 over UDP.
 
-Wire formats:
-    READ_ALL <address> <size>
-    WRITE_ALL <address> <size> <value_0> ... <value_15>
-    WRITE_READ_ALL <write_address> <write_size> <read_address> <read_size> <value_0> ... <value_15>
-    READ <address> <size> <motor_id> ...
-    WRITE <address> <size> <motor_id> <value> ...
-    WRITE_READ <write_address> <write_size> <read_address> <read_size> <motor_id> <value> ...
+The board accepts only one packet layout (little-endian, 86 bytes), matching
+``UdpPacket`` in leap_hand_bridge.ino. It is not a text protocol.
 
-Read methods return dictionaries keyed by motor ID. Write methods wait for an
-echoed binary acknowledgement. Requests and responses can optionally be logged
+    struct UdpPacket {
+        uint8_t cmd;          // 0 READ_ALL, 1 WRITE_ALL, 2 WRITE_READ_ALL,
+                              // 3 READ, 4 WRITE, 5 WRITE_READ, 255 ERR
+        uint8_t addr;         // Dynamixel write address (read address for READ*)
+        uint8_t length;       // write/read size in bytes: 1, 2, or 4
+        uint8_t count;        // motors used in this packet (0-16)
+        uint8_t read_addr;    // Dynamixel read address for WRITE_READ*
+        uint8_t read_length;  // read size in bytes: 1, 2, or 4
+        struct {
+            uint8_t id;       // motor ID 0-15
+            int32_t val;      // register value (unused slots ignored)
+        } motors[16];
+    };
+
+WRITE_ALL assumes motors[0..15] are IDs 0-15 in order. Partial READ/WRITE
+use count and motors[0..count-1]. WRITE_READ* writes using addr/length, then
+reads using read_addr/read_length. The OpenRB echoes the same 86-byte struct
+(or cmd=255 with motors[0].val set to an error code).
+
+Read methods return dictionaries keyed by motor ID. Write methods wait for
+that echoed acknowledgement. Requests and responses can optionally be logged
 to CSV as hexadecimal packet strings.
+
+Position, velocity, and acceleration registers are converted at this API:
+SI value = (raw register - offset) * scale. Absolute positions use offset 2048
+so 0 rad is the motor center. The UDP payload is still Dynamixel integers.
+See DataNames members marked ``SI:`` for which fields are converted.
 """
 
 import csv
 from enum import IntEnum
+import math
 import socket
 import struct
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_IP = "10.42.42.50"
 DEFAULT_PORT = 8888
 DEFAULT_TIMEOUT = 2.0
 MOTOR_COUNT = 16
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOG_DIR = PROJECT_ROOT / "logs"
+PLOT_DIR = PROJECT_ROOT / "plots"
 PACKET_FORMAT = "<BBBBBB" + "Bi" * MOTOR_COUNT
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
 READ_ALL = 0
@@ -34,14 +58,38 @@ WRITE = 4
 WRITE_READ = 5
 ERROR = 255
 
+# XC330-M288 register units → SI. Applied only on DataNames members that pass a
+# scale argument. Unscaled members stay raw integers.
+# Absolute positions also subtract POSITION_CENTER so 0 rad is 2048 ticks.
+# https://emanual.robotis.com/docs/en/dxl/x/xc330-m288/
+POSITION_SCALE = 2.0 * math.pi / 4096  # 1 tick = 0.088 deg → rad
+POSITION_CENTER = 2048  # ticks corresponding to 0 rad
+VELOCITY_SCALE = 0.229 * 2.0 * math.pi / 60.0  # 1 unit = 0.229 rpm → rad/s
+ACCELERATION_SCALE = 214.577 * 2.0 * math.pi / 3600.0  # 1 unit = 214.577 rev/min² → rad/s²
+
 
 class DataNames(IntEnum):
-    """Control-table data names and their Dynamixel control-table addresses."""
+    """Control-table data names and their Dynamixel control-table addresses.
 
-    def __new__(cls, address: int, size: int):
+    Members defined with a ``scale`` argument are converted on read/write:
+    SI = (raw - offset) * scale. Absolute position members also pass
+    ``POSITION_CENTER`` so 0 rad is 2048 ticks. Those members are marked
+    ``SI:`` below. Everything else is still a raw register integer (modes,
+    gains, current, PWM, voltage, …).
+    """
+
+    def __new__(
+        cls,
+        address: int,
+        size: int,
+        scale: float | None = None,
+        offset: int = 0,
+    ):
         member = int.__new__(cls, address)
         member._value_ = address
         object.__setattr__(member, "_size", size)
+        object.__setattr__(member, "_scale", scale)
+        object.__setattr__(member, "_offset", offset)
         return member
 
     MODEL_NUMBER = (0, 2)
@@ -54,16 +102,16 @@ class DataNames(IntEnum):
     OPERATING_MODE = (11, 1)
     SECONDARY_ID = (12, 1)
     PROTOCOL_TYPE = (13, 1)
-    HOMING_OFFSET = (20, 4)
-    MOVING_THRESHOLD = (24, 4)
+    HOMING_OFFSET = (20, 4, POSITION_SCALE)  # SI: rad (relative, not centered)
+    MOVING_THRESHOLD = (24, 4, VELOCITY_SCALE)  # SI: rad/s
     TEMPERATURE_LIMIT = (31, 1)
     MIN_VOLTAGE_LIMIT = (32, 2)
     MAX_VOLTAGE_LIMIT = (34, 2)
     PWM_LIMIT = (36, 2)
     CURRENT_LIMIT = (38, 2)
-    VELOCITY_LIMIT = (44, 4)
-    MAX_POSITION_LIMIT = (48, 4)
-    MIN_POSITION_LIMIT = (52, 4)
+    VELOCITY_LIMIT = (44, 4, VELOCITY_SCALE)  # SI: rad/s
+    MAX_POSITION_LIMIT = (48, 4, POSITION_SCALE, POSITION_CENTER)  # SI: rad (0 = 2048 ticks)
+    MIN_POSITION_LIMIT = (52, 4, POSITION_SCALE, POSITION_CENTER)  # SI: rad (0 = 2048 ticks)
     STARTUP_CONFIGURATION = (60, 1)
     PWM_SLOPE = (62, 1)
     SHUTDOWN = (63, 1)
@@ -82,19 +130,19 @@ class DataNames(IntEnum):
     BUS_WATCHDOG = (98, 1)
     GOAL_PWM = (100, 2)
     GOAL_CURRENT = (102, 2)
-    GOAL_VELOCITY = (104, 4)
-    PROFILE_ACCELERATION = (108, 4)
-    PROFILE_VELOCITY = (112, 4)
-    GOAL_POSITION = (116, 4)
+    GOAL_VELOCITY = (104, 4, VELOCITY_SCALE)  # SI: rad/s
+    PROFILE_ACCELERATION = (108, 4, ACCELERATION_SCALE)  # SI: rad/s²
+    PROFILE_VELOCITY = (112, 4, VELOCITY_SCALE)  # SI: rad/s
+    GOAL_POSITION = (116, 4, POSITION_SCALE, POSITION_CENTER)  # SI: rad (0 = 2048 ticks)
     REALTIME_TICK = (120, 2)
     MOVING = (122, 1)
     MOVING_STATUS = (123, 1)
     PRESENT_PWM = (124, 2)
     PRESENT_CURRENT = (126, 2)
-    PRESENT_VELOCITY = (128, 4)
-    PRESENT_POSITION = (132, 4)
-    VELOCITY_TRAJECTORY = (136, 4)
-    POSITION_TRAJECTORY = (140, 4)
+    PRESENT_VELOCITY = (128, 4, VELOCITY_SCALE)  # SI: rad/s
+    PRESENT_POSITION = (132, 4, POSITION_SCALE, POSITION_CENTER)  # SI: rad (0 = 2048 ticks)
+    VELOCITY_TRAJECTORY = (136, 4, VELOCITY_SCALE)  # SI: rad/s
+    POSITION_TRAJECTORY = (140, 4, POSITION_SCALE, POSITION_CENTER)  # SI: rad (0 = 2048 ticks)
     PRESENT_INPUT_VOLTAGE = (144, 2)
     PRESENT_TEMPERATURE = (146, 1)
     BACKUP_READY = (147, 1)
@@ -102,6 +150,16 @@ class DataNames(IntEnum):
     @property
     def size(self) -> int:
         return object.__getattribute__(self, "_size")
+
+    @property
+    def scale(self) -> float | None:
+        """Raw-to-SI multiplier, or None if this register is left as an integer."""
+        return object.__getattribute__(self, "_scale")
+
+    @property
+    def offset(self) -> int:
+        """Raw ticks subtracted before scaling. 2048 for absolute positions."""
+        return object.__getattribute__(self, "_offset")
 
 
 ControlTableItem = DataNames
@@ -172,6 +230,30 @@ def _validate_value(value: int) -> None:
         raise ValueError("value must be a signed 32-bit integer")
 
 
+def _to_raw(item: ControlTableItem | str, value: int | float) -> int:
+    """Convert an API value to a Dynamixel register integer."""
+    control_table_item, _ = _item_metadata(item)
+    scale = control_table_item.scale
+    if scale is None:
+        _validate_value(value)
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"{control_table_item.name} value must be a number in SI units"
+        )
+    raw_value = int(round(value / scale)) + control_table_item.offset
+    _validate_value(raw_value)
+    return raw_value
+
+
+def _from_raw(item: DataNames, value: int) -> int | float:
+    """Convert a Dynamixel register integer to an API value."""
+    scale = item.scale
+    if scale is None:
+        return value
+    return (value - item.offset) * scale
+
+
 def _build_packet(
     command: int,
     item: ControlTableItem | str,
@@ -229,13 +311,12 @@ def build_read_all_command(item: ControlTableItem | str) -> bytes:
 
 
 def build_write_all_command(
-    item: ControlTableItem | str, values: list[int] | tuple[int, ...]
+    item: ControlTableItem | str, values: list[int | float] | tuple[int | float, ...]
 ) -> bytes:
     if len(values) != 16:
         raise ValueError("WRITE_ALL requires exactly 16 values")
-    for value in values:
-        _validate_value(value)
-    return _build_packet(WRITE_ALL, item, MOTOR_COUNT, list(enumerate(values)))
+    raw_values = [_to_raw(item, value) for value in values]
+    return _build_packet(WRITE_ALL, item, MOTOR_COUNT, list(enumerate(raw_values)))
 
 
 def build_read_command(
@@ -249,39 +330,37 @@ def build_read_command(
 
 
 def build_write_command(
-    item: ControlTableItem | str, values_by_motor: dict[int, int]
+    item: ControlTableItem | str, values_by_motor: dict[int, int | float]
 ) -> bytes:
     if not values_by_motor:
         raise ValueError("WRITE requires at least one motor ID and value")
     parts = []
     for motor_id, value in values_by_motor.items():
         _validate_motor_id(motor_id)
-        _validate_value(value)
-        parts.append((motor_id, value))
+        parts.append((motor_id, _to_raw(item, value)))
     return _build_packet(WRITE, item, len(parts), parts)
 
 
 def build_write_read_all_command(
     write_item: ControlTableItem | str,
-    values: list[int] | tuple[int, ...],
+    values: list[int | float] | tuple[int | float, ...],
     read_item: ControlTableItem | str | None = None,
 ) -> bytes:
     if len(values) != 16:
         raise ValueError("WRITE_READ_ALL requires exactly 16 values")
-    for value in values:
-        _validate_value(value)
+    raw_values = [_to_raw(write_item, value) for value in values]
     return _build_packet(
         WRITE_READ_ALL,
         write_item,
         MOTOR_COUNT,
-        list(enumerate(values)),
+        list(enumerate(raw_values)),
         read_item=read_item,
     )
 
 
 def build_write_read_command(
     write_item: ControlTableItem | str,
-    values_by_motor: dict[int, int],
+    values_by_motor: dict[int, int | float],
     read_item: ControlTableItem | str | None = None,
 ) -> bytes:
     if not values_by_motor:
@@ -289,8 +368,7 @@ def build_write_read_command(
     parts = []
     for motor_id, value in values_by_motor.items():
         _validate_motor_id(motor_id)
-        _validate_value(value)
-        parts.append((motor_id, value))
+        parts.append((motor_id, _to_raw(write_item, value)))
     return _build_packet(
         WRITE_READ,
         write_item,
@@ -368,7 +446,7 @@ class ControlTableClient:
         if (response.read_address, response.read_length) != (request.read_address, request.read_length):
             raise ControlTableProtocolError("Response read address or length did not match request")
 
-    def _read_values(self, command: bytes, motor_ids: list[int]) -> dict[int, int]:
+    def _read_values(self, command: bytes, motor_ids: list[int]) -> dict[int, int | float]:
         request = unpack_packet(command)
         response = unpack_packet(self._request(command))
         self._validate_response_header(request, response)
@@ -382,7 +460,11 @@ class ControlTableClient:
             raise ControlTableProtocolError(
                 f"Expected motor IDs {motor_ids}, got {returned_ids}"
             )
-        return dict(returned_motors)
+        read_item = DataNames(request.read_address)
+        return {
+            motor_id: _from_raw(read_item, raw_value)
+            for motor_id, raw_value in returned_motors
+        }
 
     def _write(self, command: bytes) -> None:
         request = unpack_packet(command)
@@ -395,7 +477,7 @@ class ControlTableClient:
         if response.motors[: response.count] != request.motors[: request.count]:
             raise ControlTableProtocolError("Write acknowledgement did not echo the request")
 
-    def read_all(self, item: ControlTableItem | str) -> dict[int, int]:
+    def read_all(self, item: ControlTableItem | str) -> dict[int, int | float]:
         """
         Read the value of a control table item for all motors.
 
@@ -403,13 +485,13 @@ class ControlTableClient:
             item: The control table item to read.
 
         Returns:
-            A dictionary mapping motor IDs to their corresponding read values.
-            E.g., {0: 123, 1: 456, 2: 789}.
+            Motor ID to value. Position/velocity/acceleration items are SI
+            (rad, rad/s, rad/s²); other items are raw integers.
         """
         return self._read_values(build_read_all_command(item), list(range(16)))
 
     def write_all(
-        self, item: ControlTableItem | str, values: list[int] | tuple[int, ...]
+        self, item: ControlTableItem | str, values: list[int | float] | tuple[int | float, ...]
     ) -> None:
         """
         Write a control-table value for all 16 motors.
@@ -417,6 +499,7 @@ class ControlTableClient:
         Args:
             item: The control-table item to write.
             values: Exactly 16 values, ordered by motor ID 0 through 15.
+                Use SI units for scaled items (see DataNames ``SI:`` comments).
 
         Raises:
             ValueError: If values does not contain exactly 16 entries.
@@ -424,10 +507,9 @@ class ControlTableClient:
         """
         self._write(build_write_all_command(item, values))
 
-
     def read(
         self, item: ControlTableItem | str, motor_ids: list[int] | tuple[int, ...]
-    ) -> dict[int, int]:
+    ) -> dict[int, int | float]:
         """
         Read the value of a control table item for multiple motors.
 
@@ -436,20 +518,20 @@ class ControlTableClient:
             motor_ids: A list of motor IDs to read from, in the range 0-15.
 
         Returns:
-            A dictionary mapping motor IDs to their corresponding read values.
-            E.g., {0: 123, 1: 456, 2: 789}.
+            Motor ID to value. Position/velocity/acceleration items are SI
+            (rad, rad/s, rad/s²); other items are raw integers.
         """
         return self._read_values(build_read_command(item, motor_ids), list(motor_ids))
 
     def write(
-        self, item: ControlTableItem | str, values_by_motor: dict[int, int]
+        self, item: ControlTableItem | str, values_by_motor: dict[int, int | float]
     ) -> None:
         """
         Write the value of a control table item for multiple motors.
 
         Args:
             item: The control table item to write.
-            values_by_motor: A dictionary mapping motor IDs to their values.
+            values_by_motor: Motor ID to value. Use SI units for scaled items.
 
         Raises:
             ControlTableError: If the OpenRB returns an ERR response.
@@ -459,20 +541,20 @@ class ControlTableClient:
     def write_read_all(
         self,
         write_item: ControlTableItem | str,
-        values: list[int] | tuple[int, ...],
+        values: list[int | float] | tuple[int | float, ...],
         read_item: ControlTableItem | str | None = None,
-    ) -> dict[int, int]:
+    ) -> dict[int, int | float]:
         """
         Write a control-table value for all 16 motors and return their read values.
 
         Args:
             write_item: The control-table item to write.
             values: Exactly 16 values, ordered by motor ID 0 through 15.
+                Use SI units for scaled items.
             read_item: The control-table item to read. Defaults to write_item if None.
 
         Returns:
-            A dictionary mapping motor IDs to their corresponding read values.
-            E.g., {0: 123, 1: 456, ...}.
+            Motor ID to value. Scaled items are returned in SI units.
 
         Raises:
             ValueError: If values does not contain exactly 16 entries.
@@ -486,20 +568,19 @@ class ControlTableClient:
     def write_read(
         self,
         write_item: ControlTableItem | str,
-        values_by_motor: dict[int, int],
+        values_by_motor: dict[int, int | float],
         read_item: ControlTableItem | str | None = None,
-    ) -> dict[int, int]:
+    ) -> dict[int, int | float]:
         """
         Write the value of a control table item for multiple motors and return their read values.
 
         Args:
             write_item: The control table item to write.
-            values_by_motor: A dictionary mapping motor IDs to their values.
+            values_by_motor: Motor ID to value. Use SI units for scaled items.
             read_item: The control-table item to read. Defaults to write_item if None.
 
         Returns:
-            A dictionary mapping motor IDs to their corresponding read values.
-            E.g., {0: 123, 1: 456}.
+            Motor ID to value. Scaled items are returned in SI units.
 
         Raises:
             ValueError: If values_by_motor is empty.

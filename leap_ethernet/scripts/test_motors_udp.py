@@ -1,25 +1,48 @@
+"""UDP motor write/read benchmark for the 16-motor hand.
+
+Configures current limit, return delay 0, position mode, and torque, then
+runs warmup reads plus timed write_read iterations with random goals near
+center. Logs positions, checks that motors reached the previous target,
+prints timing stats, and saves plots under plots/.
+
+Run from leap_ethernet/:
+
+    uv run python scripts/test_motors_udp.py
+
+Arguments:
+    none    Iteration counts and IP/port are constants at the top of this file.
+"""
+
 import csv
 import random
 import statistics
 import time
 from datetime import datetime
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from control_table_client import ControlTableClient, DataNames
+from client import (
+    ControlTableClient,
+    DataNames,
+    LOG_DIR,
+    MOTOR_COUNT,
+    PLOT_DIR,
+    POSITION_CENTER,
+    POSITION_SCALE,
+)
 
 UDP_IP = "10.42.42.50"
 UDP_PORT = 8888
 TIMEOUT = 2.0
 WARMUP_COUNT = 100
 TEST_COUNT = 500
-MOTOR_COUNT = 16
 MOTOR_IDS = list(range(MOTOR_COUNT))
+POSITION_LOG = LOG_DIR / "position_log.csv"
+UDP_MOTOR_LOG = LOG_DIR / "udp_motor_log.csv"
 
 
 def write_position_log_header() -> None:
-    with open("position_log.csv", "w", newline="") as log_file:
+    with open(POSITION_LOG, "w", newline="") as log_file:
         writer = csv.writer(log_file)
         writer.writerow(
             [
@@ -31,9 +54,9 @@ def write_position_log_header() -> None:
 
 
 def append_position_log(
-    test_id: int, target_positions: list[int], read_positions: dict[int, int]
+    test_id: int, target_positions: list[float], read_positions: dict[int, int | float]
 ) -> None:
-    with open("position_log.csv", "a", newline="") as log_file:
+    with open(POSITION_LOG, "a", newline="") as log_file:
         writer = csv.writer(log_file)
         writer.writerow(
             [
@@ -46,20 +69,21 @@ def append_position_log(
 
 def check_previous_targets() -> bool:
     mismatch_found = False
-    with open("position_log.csv", newline="") as log_file:
+    with open(POSITION_LOG, newline="") as log_file:
         rows = list(csv.reader(log_file))[1:]
 
     for row_index in range(1, len(rows)):
         previous_targets = [
-            int(value) for value in rows[row_index][1 : MOTOR_COUNT + 1]
+            float(value) for value in rows[row_index][1 : MOTOR_COUNT + 1]
         ]
         current_positions = [
-            int(value) for value in rows[row_index][MOTOR_COUNT + 1 :]
+            float(value) for value in rows[row_index][MOTOR_COUNT + 1 :]
         ]
         mismatches = [
             motor_id
             for motor_id in range(MOTOR_COUNT)
-            if current_positions[motor_id] != previous_targets[motor_id]
+            if abs(current_positions[motor_id] - previous_targets[motor_id])
+            > POSITION_SCALE / 2
         ]
 
         if mismatches:
@@ -73,9 +97,7 @@ def check_previous_targets() -> bool:
 
 
 def plot_iteration_times(iteration_times: list[float]) -> None:
-    plot_directory = Path("plots") / datetime.now().strftime(
-        "%Y%m%d_%H%M%S_%f"
-    )
+    plot_directory = PLOT_DIR / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     plot_directory.mkdir(parents=True, exist_ok=False)
 
     times_ms = [elapsed * 1000 for elapsed in iteration_times]
@@ -159,7 +181,8 @@ def main() -> None:
     print(f"Testing UDP connection to OpenRB-150 at {UDP_IP}:{UDP_PORT}")
     print("-" * 40)
 
-    client = ControlTableClient(UDP_IP, UDP_PORT, TIMEOUT, "udp_motor_log.csv")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    client = ControlTableClient(UDP_IP, UDP_PORT, TIMEOUT, str(UDP_MOTOR_LOG))
     try:
         print(f"Setting current limit of all motors to {150} mA")
         client.write(
@@ -185,10 +208,10 @@ def main() -> None:
             {motor_id: 1 for motor_id in MOTOR_IDS},
         )
 
-        print(f"Setting all goal positions to {2048}")
+        print("Setting all goal positions to 0.0 rad")
         client.write(
             DataNames.GOAL_POSITION,
-            {motor_id: 2048 for motor_id in MOTOR_IDS},
+            {motor_id: 0.0 for motor_id in MOTOR_IDS},
         )
 
         print(
@@ -198,7 +221,7 @@ def main() -> None:
         for _ in range(WARMUP_COUNT):
             client.read(DataNames.PRESENT_POSITION, MOTOR_IDS)
 
-        # write_position_log_header()
+        write_position_log_header()
         iteration_times = []
         loop_start = time.perf_counter()
 
@@ -207,7 +230,8 @@ def main() -> None:
         for test_id in range(TEST_COUNT):
             iteration_start = time.perf_counter()
             target_positions = [
-                random.randint(2000, 2100) for _ in range(MOTOR_COUNT)
+                (random.randint(2000, 2100) - POSITION_CENTER) * POSITION_SCALE
+                for _ in range(MOTOR_COUNT)
             ]
 
             # client.write(
@@ -225,9 +249,9 @@ def main() -> None:
             )
 
             print(
-                f"Target Positions: {' '.join(map(str, target_positions))}, "
+                f"Target Positions: {' '.join(f'{value:.4f}' for value in target_positions)}, "
                 "Read Positions: "
-                f"{' '.join(str(read_positions[motor_id]) for motor_id in range(MOTOR_COUNT))}"
+                f"{' '.join(f'{read_positions[motor_id]:.4f}' for motor_id in range(MOTOR_COUNT))}"
             )
             append_position_log(test_id, target_positions, read_positions)
             iteration_times.append(time.perf_counter() - iteration_start)

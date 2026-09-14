@@ -154,3 +154,5 @@ dmypy.json
 cython_debug/
 
 leap_ethernet/plots/
+leap_ethernet/logs/
+leap_ethernet/*.csv

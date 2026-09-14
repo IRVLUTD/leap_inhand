@@ -1,0 +1,21 @@
+[project]
+name = "leap-ethernet"
+version = "0.1.0"
+description = "UDP control-table client for the LEAP hand OpenRB-150 bridge"
+requires-python = ">=3.14"
+dependencies = [
+    "matplotlib>=3.11.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+dev-mode-dirs = ["src"]
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/client.py" = "client.py"
