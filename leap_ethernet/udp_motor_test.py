@@ -166,6 +166,12 @@ def main() -> None:
             DataNames.CURRENT_LIMIT,
             {motor_id: 150 for motor_id in MOTOR_IDS},
         )
+
+        print("Setting return delay time of all motors to 0")
+        client.write(
+            DataNames.RETURN_DELAY_TIME,
+            {motor_id: 0 for motor_id in MOTOR_IDS}
+        )
         
         print(f"Setting motors to position mode")
         client.write(
@@ -208,6 +214,7 @@ def main() -> None:
                 DataNames.GOAL_POSITION,
                 dict(zip(MOTOR_IDS, target_positions)),
             )
+
             print("Wrote target positions:", target_positions)
             read_positions = client.read(DataNames.PRESENT_POSITION, MOTOR_IDS)
             print("Read positions:", read_positions)
