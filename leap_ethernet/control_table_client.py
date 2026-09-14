@@ -3,10 +3,10 @@
 Wire formats:
     READ_ALL <address> <size>
     WRITE_ALL <address> <size> <value_0> ... <value_15>
-    WRITE_READ_ALL <address> <size> <value_0> ... <value_15>
+    WRITE_READ_ALL <write_address> <write_size> <read_address> <read_size> <value_0> ... <value_15>
     READ <address> <size> <motor_id> ...
     WRITE <address> <size> <motor_id> <value> ...
-    WRITE_READ <address> <size> <motor_id> <value> ...
+    WRITE_READ <write_address> <write_size> <read_address> <read_size> <motor_id> <value> ...
 
 Read methods return dictionaries keyed by motor ID. Write methods wait for an
 echoed binary acknowledgement. Requests and responses can optionally be logged
@@ -24,7 +24,7 @@ DEFAULT_IP = "10.42.42.50"
 DEFAULT_PORT = 8888
 DEFAULT_TIMEOUT = 2.0
 MOTOR_COUNT = 16
-PACKET_FORMAT = "<BBBB" + "Bi" * MOTOR_COUNT
+PACKET_FORMAT = "<BBBBBB" + "Bi" * MOTOR_COUNT
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
 READ_ALL = 0
 WRITE_ALL = 1
@@ -109,12 +109,14 @@ ControlTableItem = DataNames
 
 @dataclass(frozen=True)
 class BinaryPacket:
-    """Decoded representation of one 84-byte protocol packet."""
+    """Decoded representation of one 86-byte protocol packet."""
 
     cmd: int
     address: int
     length: int
     count: int
+    read_address: int
+    read_length: int
     motors: tuple[tuple[int, int], ...]
 
 
@@ -175,8 +177,13 @@ def _build_packet(
     item: ControlTableItem | str,
     count: int,
     motors: list[tuple[int, int]],
+    read_item: ControlTableItem | str | None = None,
 ) -> bytes:
     control_table_item, size = _item_metadata(item)
+    if read_item is not None:
+        read_control_table_item, read_size = _item_metadata(read_item)
+    else:
+        read_control_table_item, read_size = control_table_item, size
     if not 0 <= count <= MOTOR_COUNT:
         raise ValueError(f"count must be between 0 and {MOTOR_COUNT}")
     if len(motors) > MOTOR_COUNT:
@@ -192,6 +199,8 @@ def _build_packet(
         control_table_item.value,
         size,
         count,
+        read_control_table_item.value,
+        read_size,
         *[part for motor in padded_motors for part in motor],
     )
     if len(packet) != PACKET_SIZE:
@@ -208,10 +217,10 @@ def unpack_packet(packet: bytes) -> BinaryPacket:
     unpacked = struct.unpack(PACKET_FORMAT, packet)
     motors = tuple(
         (unpacked[index], unpacked[index + 1])
-        for index in range(4, len(unpacked), 2)
+        for index in range(6, len(unpacked), 2)
     )
     return BinaryPacket(
-        unpacked[0], unpacked[1], unpacked[2], unpacked[3], motors
+        unpacked[0], unpacked[1], unpacked[2], unpacked[3], unpacked[4], unpacked[5], motors
     )
 
 
@@ -253,17 +262,27 @@ def build_write_command(
 
 
 def build_write_read_all_command(
-    item: ControlTableItem | str, values: list[int] | tuple[int, ...]
+    write_item: ControlTableItem | str,
+    values: list[int] | tuple[int, ...],
+    read_item: ControlTableItem | str | None = None,
 ) -> bytes:
     if len(values) != 16:
         raise ValueError("WRITE_READ_ALL requires exactly 16 values")
     for value in values:
         _validate_value(value)
-    return _build_packet(WRITE_READ_ALL, item, MOTOR_COUNT, list(enumerate(values)))
+    return _build_packet(
+        WRITE_READ_ALL,
+        write_item,
+        MOTOR_COUNT,
+        list(enumerate(values)),
+        read_item=read_item,
+    )
 
 
 def build_write_read_command(
-    item: ControlTableItem | str, values_by_motor: dict[int, int]
+    write_item: ControlTableItem | str,
+    values_by_motor: dict[int, int],
+    read_item: ControlTableItem | str | None = None,
 ) -> bytes:
     if not values_by_motor:
         raise ValueError("WRITE_READ requires at least one motor ID and value")
@@ -272,7 +291,13 @@ def build_write_read_command(
         _validate_motor_id(motor_id)
         _validate_value(value)
         parts.append((motor_id, value))
-    return _build_packet(WRITE_READ, item, len(parts), parts)
+    return _build_packet(
+        WRITE_READ,
+        write_item,
+        len(parts),
+        parts,
+        read_item=read_item,
+    )
 
 
 class ControlTableClient:
@@ -340,6 +365,8 @@ class ControlTableClient:
             )
         if (response.address, response.length) != (request.address, request.length):
             raise ControlTableProtocolError("Response address or length did not match request")
+        if (response.read_address, response.read_length) != (request.read_address, request.read_length):
+            raise ControlTableProtocolError("Response read address or length did not match request")
 
     def _read_values(self, command: bytes, motor_ids: list[int]) -> dict[int, int]:
         request = unpack_packet(command)
@@ -430,14 +457,18 @@ class ControlTableClient:
         self._write(build_write_command(item, values_by_motor))
 
     def write_read_all(
-        self, item: ControlTableItem | str, values: list[int] | tuple[int, ...]
+        self,
+        write_item: ControlTableItem | str,
+        values: list[int] | tuple[int, ...],
+        read_item: ControlTableItem | str | None = None,
     ) -> dict[int, int]:
         """
         Write a control-table value for all 16 motors and return their read values.
 
         Args:
-            item: The control-table item to write and read.
+            write_item: The control-table item to write.
             values: Exactly 16 values, ordered by motor ID 0 through 15.
+            read_item: The control-table item to read. Defaults to write_item if None.
 
         Returns:
             A dictionary mapping motor IDs to their corresponding read values.
@@ -447,17 +478,24 @@ class ControlTableClient:
             ValueError: If values does not contain exactly 16 entries.
             ControlTableError: If the OpenRB returns an ERR response.
         """
-        return self._read_values(build_write_read_all_command(item, values), list(range(16)))
+        return self._read_values(
+            build_write_read_all_command(write_item, values, read_item=read_item),
+            list(range(16)),
+        )
 
     def write_read(
-        self, item: ControlTableItem | str, values_by_motor: dict[int, int]
+        self,
+        write_item: ControlTableItem | str,
+        values_by_motor: dict[int, int],
+        read_item: ControlTableItem | str | None = None,
     ) -> dict[int, int]:
         """
         Write the value of a control table item for multiple motors and return their read values.
 
         Args:
-            item: The control table item to write and read.
+            write_item: The control table item to write.
             values_by_motor: A dictionary mapping motor IDs to their values.
+            read_item: The control-table item to read. Defaults to write_item if None.
 
         Returns:
             A dictionary mapping motor IDs to their corresponding read values.
@@ -468,7 +506,7 @@ class ControlTableClient:
             ControlTableError: If the OpenRB returns an ERR response.
         """
         return self._read_values(
-            build_write_read_command(item, values_by_motor),
+            build_write_read_command(write_item, values_by_motor, read_item=read_item),
             list(values_by_motor.keys()),
         )
 

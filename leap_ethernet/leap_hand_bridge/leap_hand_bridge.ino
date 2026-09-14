@@ -5,16 +5,18 @@
 
 /*
  * UDP Binary Packet Schema:
- * Total size: 84 bytes
+ * Total size: 86 bytes
  * 
  * struct UdpPacket {
- *     uint8_t cmd;      // 0=READ_ALL, 1=WRITE_ALL, 2=WRITE_READ_ALL, 3=READ, 4=WRITE, 5=WRITE_READ, 255=ERR
- *     uint8_t addr;     // Dynamixel address (0-255)
- *     uint8_t length;   // 1, 2, or 4
- *     uint8_t count;    // Number of motors in this packet (0-16)
+ *     uint8_t cmd;         // 0=READ_ALL, 1=WRITE_ALL, 2=WRITE_READ_ALL, 3=READ, 4=WRITE, 5=WRITE_READ, 255=ERR
+ *     uint8_t addr;        // Dynamixel write address (or read address for pure READ) (0-255)
+ *     uint8_t length;      // Write length (1, 2, or 4)
+ *     uint8_t count;       // Number of motors in this packet (0-16)
+ *     uint8_t read_addr;   // Dynamixel read address for WRITE_READ commands (0-255)
+ *     uint8_t read_length; // Read length (1, 2, or 4)
  *     struct {
- *         uint8_t id;   // Motor ID
- *         int32_t val;  // Value
+ *         uint8_t id;      // Motor ID
+ *         int32_t val;     // Value
  *     } motors[16];
  * };
  */
@@ -41,6 +43,8 @@ struct UdpPacket {
     uint8_t addr;
     uint8_t length;
     uint8_t count;
+    uint8_t read_addr;
+    uint8_t read_length;
     struct {
         uint8_t id;
         int32_t val;
@@ -111,9 +115,11 @@ void packValue(uint8_t* buf, int32_t val, uint8_t item_len) {
   memcpy(buf, &val, item_len);
 }
 
-void handleRead(UdpPacket* pkt, bool isAll) {
-  sr_infos.addr = pkt->addr;
-  sr_infos.addr_length = pkt->length;
+void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
+  uint8_t target_addr = useReadAddr ? pkt->read_addr : pkt->addr;
+  uint8_t target_length = useReadAddr ? pkt->read_length : pkt->length;
+  sr_infos.addr = target_addr;
+  sr_infos.addr_length = target_length;
   
   if (isAll) {
     // Split into two batches of 8 motors to keep serial RX traffic under the 
@@ -131,7 +137,7 @@ void handleRead(UdpPacket* pkt, bool isAll) {
     uint8_t cnt1 = dxl.syncRead(&sr_infos);
     for (int i = 0; i < cnt1; i++) {
       pkt->motors[total_recv].id = info_xels_sr[i].id;
-      int32_t temp_val = extractValue(sr_data_arr[i], pkt->length);
+      int32_t temp_val = extractValue(sr_data_arr[i], target_length);
       memcpy(&pkt->motors[total_recv].val, &temp_val, sizeof(int32_t));
       total_recv++;
     }
@@ -146,7 +152,7 @@ void handleRead(UdpPacket* pkt, bool isAll) {
     uint8_t cnt2 = dxl.syncRead(&sr_infos);
     for (int i = 0; i < cnt2; i++) {
       pkt->motors[total_recv].id = info_xels_sr[i].id;
-      int32_t temp_val = extractValue(sr_data_arr[i + 8], pkt->length);
+      int32_t temp_val = extractValue(sr_data_arr[i + 8], target_length);
       memcpy(&pkt->motors[total_recv].val, &temp_val, sizeof(int32_t));
       total_recv++;
     }
@@ -184,7 +190,7 @@ void handleRead(UdpPacket* pkt, bool isAll) {
       pkt->count = recv_cnt;
       for (int i = 0; i < recv_cnt; i++) {
         pkt->motors[i].id = info_xels_sr[i].id;
-        int32_t temp_val = extractValue(sr_data_arr[i], pkt->length);
+        int32_t temp_val = extractValue(sr_data_arr[i], target_length);
         memcpy(&pkt->motors[i].val, &temp_val, sizeof(int32_t)); // Safe unaligned store
       }
       // Clean out unused slots so stale/dirty values from the request aren't sent back
@@ -277,13 +283,13 @@ void handleWrite(UdpPacket* pkt, bool isAll) {
 
 void handleWriteReadAll(UdpPacket* pkt) {
   if (executeWrite(pkt, true)) {
-    handleRead(pkt, true);
+    handleRead(pkt, true, true);
   }
 }
 
 void handleWriteRead(UdpPacket* pkt) {
   if (executeWrite(pkt, false)) {
-    handleRead(pkt, false);
+    handleRead(pkt, false, true);
   }
 }
 
