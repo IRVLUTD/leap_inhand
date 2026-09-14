@@ -1,4 +1,4 @@
-"""Send textual control-table commands to an OpenRB-150 over UDP.
+"""Send control-table commands to an OpenRB-150 over UDP.
 
 Wire formats:
     READ_ALL <address> <size>
@@ -6,23 +6,29 @@ Wire formats:
     READ <address> <size> <motor_id> ...
     WRITE <address> <size> <motor_id> <value> ...
 
-Read methods return dictionaries keyed by motor ID. Requests and responses can
-optionally be logged to CSV as their textual packet strings.
+Read methods return dictionaries keyed by motor ID. Write methods wait for an
+echoed binary acknowledgement. Requests and responses can optionally be logged
+to CSV as hexadecimal packet strings.
 """
 
 import csv
 from enum import IntEnum
 import socket
+import struct
 import time
+from dataclasses import dataclass
 
 DEFAULT_IP = "10.42.42.50"
 DEFAULT_PORT = 8888
 DEFAULT_TIMEOUT = 2.0
 MOTOR_COUNT = 16
-READ_ALL = "READ_ALL"
-WRITE_ALL = "WRITE_ALL"
-READ = "READ"
-WRITE = "WRITE"
+PACKET_FORMAT = "<BBBB" + "Bi" * MOTOR_COUNT
+PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
+READ_ALL = 0
+WRITE_ALL = 1
+READ = 2
+WRITE = 3
+ERROR = 255
 
 
 class DataNames(IntEnum):
@@ -97,10 +103,21 @@ class DataNames(IntEnum):
 ControlTableItem = DataNames
 
 
+@dataclass(frozen=True)
+class BinaryPacket:
+    """Decoded representation of one 84-byte protocol packet."""
+
+    cmd: int
+    address: int
+    length: int
+    count: int
+    motors: tuple[tuple[int, int], ...]
+
+
 class ControlTableError(Exception):
     """An ERR response returned by the OpenRB."""
 
-    def __init__(self, reason: str, response: str | None = None) -> None:
+    def __init__(self, reason: str, response: BinaryPacket) -> None:
         self.reason = reason
         self.response = response
         super().__init__(reason)
@@ -114,6 +131,13 @@ class ControlTableProtocolError(ValueError):
     """The OpenRB returned a response that did not match the protocol."""
 
 
+ERROR_REASONS = {
+    -1: "NO_MOTOR_IDS",
+    -2: "TORQUE_SAFETY",
+    -3: "UNKNOWN_COMMAND",
+}
+
+
 def _item_metadata(item: ControlTableItem | str) -> tuple[DataNames, int]:
     """Return the control-table item and its byte size."""
     try:
@@ -124,11 +148,16 @@ def _item_metadata(item: ControlTableItem | str) -> tuple[DataNames, int]:
         )
     except (KeyError, AttributeError) as error:
         raise ValueError(f"unknown control-table item: {item}") from error
-    return control_table_item, control_table_item.size
+    try:
+        return control_table_item, control_table_item.size
+    except AttributeError as error:
+        raise ValueError(
+            f"no control-table size is defined for {control_table_item.name}"
+        ) from error
 
 
 def _validate_motor_id(motor_id: int) -> None:
-    if not isinstance(motor_id, int) or not 0 <= motor_id <= 15:
+    if not 0 <= motor_id <= 15:
         raise ValueError("motor_id must be between 0 and 15")
 
 
@@ -137,61 +166,90 @@ def _validate_value(value: int) -> None:
         raise ValueError("value must be a signed 32-bit integer")
 
 
-def _build_command(
-    command: str,
+def _build_packet(
+    command: int,
     item: ControlTableItem | str,
-    arguments: list[int],
-) -> str:
+    count: int,
+    motors: list[tuple[int, int]],
+) -> bytes:
     control_table_item, size = _item_metadata(item)
-    return " ".join(
-        [
-            command,
-            str(control_table_item.value),
-            str(size),
-            *(str(value) for value in arguments),
-        ]
+    if not 0 <= count <= MOTOR_COUNT:
+        raise ValueError(f"count must be between 0 and {MOTOR_COUNT}")
+    if len(motors) > MOTOR_COUNT:
+        raise ValueError(f"a packet can contain at most {MOTOR_COUNT} motors")
+
+    padded_motors = motors + [(0, 0)] * (MOTOR_COUNT - len(motors))
+    for motor_id, value in padded_motors:
+        _validate_motor_id(motor_id)
+        _validate_value(value)
+    packet = struct.pack(
+        PACKET_FORMAT,
+        command,
+        control_table_item.value,
+        size,
+        count,
+        *[part for motor in padded_motors for part in motor],
+    )
+    if len(packet) != PACKET_SIZE:
+        raise AssertionError(f"binary packet has unexpected size: {len(packet)}")
+    return packet
+
+
+def unpack_packet(packet: bytes) -> BinaryPacket:
+    """Decode and validate one complete binary protocol packet."""
+    if len(packet) != PACKET_SIZE:
+        raise ControlTableProtocolError(
+            f"Expected {PACKET_SIZE}-byte packet, got {len(packet)} bytes"
+        )
+    unpacked = struct.unpack(PACKET_FORMAT, packet)
+    motors = tuple(
+        (unpacked[index], unpacked[index + 1])
+        for index in range(4, len(unpacked), 2)
+    )
+    return BinaryPacket(
+        unpacked[0], unpacked[1], unpacked[2], unpacked[3], motors
     )
 
 
-def build_read_all_command(item: ControlTableItem | str) -> str:
-    return _build_command(READ_ALL, item, [])
+def build_read_all_command(item: ControlTableItem | str) -> bytes:
+    return _build_packet(READ_ALL, item, MOTOR_COUNT, list(enumerate([0] * MOTOR_COUNT)))
 
 
 def build_write_all_command(
     item: ControlTableItem | str, values: list[int] | tuple[int, ...]
-) -> str:
-    if len(values) != MOTOR_COUNT:
+) -> bytes:
+    if len(values) != 16:
         raise ValueError("WRITE_ALL requires exactly 16 values")
     for value in values:
         _validate_value(value)
-    return _build_command(WRITE_ALL, item, list(values))
+    return _build_packet(WRITE_ALL, item, MOTOR_COUNT, list(enumerate(values)))
 
 
 def build_read_command(
     item: ControlTableItem | str, motor_ids: list[int] | tuple[int, ...]
-) -> str:
+) -> bytes:
     if not motor_ids:
         raise ValueError("READ requires at least one motor ID")
     for motor_id in motor_ids:
         _validate_motor_id(motor_id)
-    return _build_command(READ, item, list(motor_ids))
+    return _build_packet(READ, item, len(motor_ids), [(motor_id, 0) for motor_id in motor_ids])
 
 
 def build_write_command(
     item: ControlTableItem | str, values_by_motor: dict[int, int]
-) -> str:
+) -> bytes:
     if not values_by_motor:
         raise ValueError("WRITE requires at least one motor ID and value")
-    arguments = []
+    parts = []
     for motor_id, value in values_by_motor.items():
         _validate_motor_id(motor_id)
         _validate_value(value)
-        arguments.extend((motor_id, value))
-    return _build_command(WRITE, item, arguments)
+        parts.append((motor_id, value))
+    return _build_packet(WRITE, item, len(parts), parts)
 
 
 class ControlTableClient:
-    """UDP client for the four textual control-table command types."""
+    """UDP client for the four control-table packet types."""
 
     def __init__(
         self,
@@ -209,10 +267,11 @@ class ControlTableClient:
     def close(self) -> None:
         self.socket.close()
 
-    def print_command(self, command: str) -> str:
-        """Print and return a textual command without sending it."""
-        print(command)
-        return command
+    def print_command(self, command: bytes) -> str:
+        """Print and return a binary command as hexadecimal without sending it."""
+        command_text = command.hex(" ")
+        print(command_text)
+        return command_text
 
     def _log(self, command: str, response: str) -> None:
         if self.log_path is None:
@@ -223,72 +282,123 @@ class ControlTableClient:
                 ((time.monotonic_ns() - self.start_time) // 1_000, command, response)
             )
 
-    def _request(self, command: str) -> str:
-        self.socket.sendto(command.encode("ascii"), self.address)
+    def _request(self, command: bytes) -> bytes:
+        command_text = command.hex(" ")
+        self.socket.sendto(command, self.address)
         try:
             response_bytes, _ = self.socket.recvfrom(1024)
         except (socket.timeout, ConnectionResetError) as error:
-            self._log(command, "TIMEOUT")
+            self._log(command_text, "TIMEOUT")
             raise ControlTableTimeout(
-                f"OpenRB did not respond within the configured timeout: {command}"
+                f"OpenRB did not respond within the configured timeout: {command_text}"
             ) from error
 
-        response = response_bytes.decode("ascii", errors="replace").strip()
-        self._log(command, response)
-        return response
+        self._log(command_text, response_bytes.hex(" "))
+        return response_bytes
 
-    @staticmethod
-    def _parse_response(response: str) -> list[int]:
-        fields = response.split()
-        if not fields:
-            raise ControlTableProtocolError("OpenRB returned an empty response")
-        if fields[0] == "ERR":
-            reason = " ".join(fields[1:]) or "OpenRB returned ERR"
-            raise ControlTableError(reason, response)
-        if fields[0] != "OK":
-            raise ControlTableProtocolError(
-                f"Expected OK or ERR response, got {response!r}"
-            )
-        try:
-            return [int(value) for value in fields[1:]]
-        except ValueError as error:
-            raise ControlTableProtocolError(
-                f"Response contained a non-integer value: {response!r}"
-            ) from error
+    def _response_error(self, response: BinaryPacket) -> None:
+        if response.cmd != ERROR:
+            return
+        error_code = response.motors[0][1]
+        reason = ERROR_REASONS.get(error_code, f"DYNAMIXEL_ERROR_{error_code}")
+        raise ControlTableError(reason, response)
 
-    def _read_values(self, command: str, motor_ids: list[int]) -> dict[int, int]:
-        values = self._parse_response(self._request(command))
-        if len(values) != len(motor_ids):
+    def _validate_response_header(
+        self, request: BinaryPacket, response: BinaryPacket
+    ) -> None:
+        self._response_error(response)
+        if response.cmd != request.cmd:
             raise ControlTableProtocolError(
-                f"Expected {len(motor_ids)} read values, got {len(values)}"
+                f"Expected response command {request.cmd}, got {response.cmd}"
             )
-        return dict(zip(motor_ids, values))
+        if (response.address, response.length) != (request.address, request.length):
+            raise ControlTableProtocolError("Response address or length did not match request")
 
-    def _write(self, command: str) -> None:
-        values = self._parse_response(self._request(command))
-        if values:
+    def _read_values(self, command: bytes, motor_ids: list[int]) -> dict[int, int]:
+        request = unpack_packet(command)
+        response = unpack_packet(self._request(command))
+        self._validate_response_header(request, response)
+        if response.count != len(motor_ids):
             raise ControlTableProtocolError(
-                f"Expected an empty OK response for write, got {values}"
+                f"Expected {len(motor_ids)} read values, got {response.count}"
             )
+        returned_motors = response.motors[: response.count]
+        returned_ids = [motor_id for motor_id, _ in returned_motors]
+        if returned_ids != motor_ids:
+            raise ControlTableProtocolError(
+                f"Expected motor IDs {motor_ids}, got {returned_ids}"
+            )
+        return dict(returned_motors)
+
+    def _write(self, command: bytes) -> None:
+        request = unpack_packet(command)
+        response = unpack_packet(self._request(command))
+        self._validate_response_header(request, response)
+        if response.count != request.count:
+            raise ControlTableProtocolError(
+                f"Expected {request.count} acknowledged writes, got {response.count}"
+            )
+        if response.motors[: response.count] != request.motors[: request.count]:
+            raise ControlTableProtocolError("Write acknowledgement did not echo the request")
 
     def read_all(self, item: ControlTableItem | str) -> dict[int, int]:
-        """Read the value of a control table item for all motors."""
-        return self._read_values(build_read_all_command(item), list(range(MOTOR_COUNT)))
+        """
+        Read the value of a control table item for all motors.
+
+        Args:
+            item: The control table item to read.
+
+        Returns:
+            A dictionary mapping motor IDs to their corresponding read values.
+            E.g., {0: 123, 1: 456, 2: 789}.
+        """
+        return self._read_values(build_read_all_command(item), list(range(16)))
 
     def write_all(
         self, item: ControlTableItem | str, values: list[int] | tuple[int, ...]
     ) -> None:
-        """Write a control-table value for all 16 motors."""
+        """
+        Write a control-table value for all 16 motors.
+
+        Args:
+            item: The control-table item to write.
+            values: Exactly 16 values, ordered by motor ID 0 through 15.
+
+        Raises:
+            ValueError: If values does not contain exactly 16 entries.
+            ControlTableError: If the OpenRB returns an ERR response.
+        """
         self._write(build_write_all_command(item, values))
+
 
     def read(
         self, item: ControlTableItem | str, motor_ids: list[int] | tuple[int, ...]
     ) -> dict[int, int]:
-        """Read a control-table value for multiple motors."""
+        """
+        Read the value of a control table item for multiple motors.
+
+        Args:
+            item: The control table item to read.
+            motor_ids: A list of motor IDs to read from, in the range 0-15.
+
+        Returns:
+            A dictionary mapping motor IDs to their corresponding read values.
+            E.g., {0: 123, 1: 456, 2: 789}.
+        """
         return self._read_values(build_read_command(item, motor_ids), list(motor_ids))
 
     def write(
         self, item: ControlTableItem | str, values_by_motor: dict[int, int]
     ) -> None:
-        """Write a control-table value for multiple motors."""
+        """
+        Write the value of a control table item for multiple motors.
+
+        Args:
+            item: The control table item to write.
+            values_by_motor: A dictionary mapping motor IDs to their values.
+
+        Raises:
+            ControlTableError: If the OpenRB returns an ERR response.
+        """
         self._write(build_write_command(item, values_by_motor))
+
