@@ -8,7 +8,7 @@
  * Total size: 84 bytes
  * 
  * struct UdpPacket {
- *     uint8_t cmd;      // 0=READ_ALL, 1=WRITE_ALL, 2=READ, 3=WRITE, 255=ERR
+ *     uint8_t cmd;      // 0=READ_ALL, 1=WRITE_ALL, 2=WRITE_READ_ALL, 3=READ, 4=WRITE, 5=WRITE_READ, 255=ERR
  *     uint8_t addr;     // Dynamixel address (0-255)
  *     uint8_t length;   // 1, 2, or 4
  *     uint8_t count;    // Number of motors in this packet (0-16)
@@ -200,8 +200,8 @@ void handleRead(UdpPacket* pkt, bool isAll) {
   }
 }
 
-void handleWrite(UdpPacket* pkt, bool isAll) {
-  // Serial.println("--- Entering handleWrite ---");
+bool executeWrite(UdpPacket* pkt, bool isAll) {
+  // Serial.println("--- Entering executeWrite ---");
   sw_infos.addr = pkt->addr;
   sw_infos.addr_length = pkt->length;
   sw_infos.xel_count = 0;
@@ -219,7 +219,7 @@ void handleWrite(UdpPacket* pkt, bool isAll) {
       if (is_movement_cmd && !torque_enabled[i]) {
         Serial.print("BLOCKED: Torque OFF for ID "); Serial.println(i);
         sendError(pkt, -2); // -2: Torque is off
-        return;
+        return false;
       }
       if (is_torque_cmd) torque_enabled[i] = (val != 0);
       
@@ -236,7 +236,7 @@ void handleWrite(UdpPacket* pkt, bool isAll) {
       if (is_movement_cmd && id < 16 && !torque_enabled[id]) {
         Serial.print("BLOCKED: Torque OFF for ID "); Serial.println(id);
         sendError(pkt, -2); // -2: Torque is off
-        return;
+        return false;
       }
       if (is_torque_cmd && id < 16) torque_enabled[id] = (val != 0);
       
@@ -250,7 +250,7 @@ void handleWrite(UdpPacket* pkt, bool isAll) {
   if (sw_infos.xel_count == 0) {
     Serial.println("ERR: sw_infos.xel_count is 0");
     sendError(pkt, -1);
-    return;
+    return false;
   }
   sw_infos.is_info_changed = true;
 
@@ -260,11 +260,30 @@ void handleWrite(UdpPacket* pkt, bool isAll) {
     drainDxlRx();
     delayMicroseconds(500);  // bus / DIR settle & motor write processing
     drainDxlRx();
-    sendResponse(pkt);
+    return true;
   } else {
     int32_t err = dxl.getLastLibErrCode();
     // Serial.print("syncWrite FAILED, lib err: "); Serial.println(err);
     sendError(pkt, err);
+    return false;
+  }
+}
+
+void handleWrite(UdpPacket* pkt, bool isAll) {
+  if (executeWrite(pkt, isAll)) {
+    sendResponse(pkt);
+  }
+}
+
+void handleWriteReadAll(UdpPacket* pkt) {
+  if (executeWrite(pkt, true)) {
+    handleRead(pkt, true);
+  }
+}
+
+void handleWriteRead(UdpPacket* pkt) {
+  if (executeWrite(pkt, false)) {
+    handleRead(pkt, false);
   }
 }
 
@@ -334,8 +353,10 @@ void loop() {
 
     if (pkt.cmd == 0) handleRead(&pkt, true);
     else if (pkt.cmd == 1) handleWrite(&pkt, true);
-    else if (pkt.cmd == 2) handleRead(&pkt, false);
-    else if (pkt.cmd == 3) handleWrite(&pkt, false);
+    else if (pkt.cmd == 2) handleWriteReadAll(&pkt);
+    else if (pkt.cmd == 3) handleRead(&pkt, false);
+    else if (pkt.cmd == 4) handleWrite(&pkt, false);
+    else if (pkt.cmd == 5) handleWriteRead(&pkt);
     else sendError(&pkt, -3); // -3: Unknown command
     
   } else if (packetSize > 0) {
