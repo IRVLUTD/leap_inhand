@@ -51,7 +51,7 @@ def check_previous_targets() -> bool:
 
     for row_index in range(1, len(rows)):
         previous_targets = [
-            int(value) for value in rows[row_index - 1][1 : MOTOR_COUNT + 1]
+            int(value) for value in rows[row_index][1 : MOTOR_COUNT + 1]
         ]
         current_positions = [
             int(value) for value in rows[row_index][MOTOR_COUNT + 1 :]
@@ -210,26 +210,31 @@ def main() -> None:
                 random.randint(2000, 2100) for _ in range(MOTOR_COUNT)
             ]
 
-            client.write(
+            # client.write(
+            #     DataNames.GOAL_POSITION,
+            #     dict(zip(MOTOR_IDS, target_positions)),
+            # )
+
+            # print("Wrote target positions:", target_positions)
+            # read_positions = client.read(DataNames.PRESENT_POSITION, MOTOR_IDS)
+            # print("Read positions:", read_positions)
+
+            read_positions = client.write_read(
                 DataNames.GOAL_POSITION,
                 dict(zip(MOTOR_IDS, target_positions)),
             )
 
-            print("Wrote target positions:", target_positions)
-            read_positions = client.read(DataNames.PRESENT_POSITION, MOTOR_IDS)
-            print("Read positions:", read_positions)
-
-            # print(
-            #     f"Target Positions: {' '.join(map(str, target_positions))}, "
-            #     "Read Positions: "
-            #     f"{' '.join(str(read_positions[motor_id]) for motor_id in range(MOTOR_COUNT))}"
-            # )
+            print(
+                f"Target Positions: {' '.join(map(str, target_positions))}, "
+                "Read Positions: "
+                f"{' '.join(str(read_positions[motor_id]) for motor_id in range(MOTOR_COUNT))}"
+            )
             append_position_log(test_id, target_positions, read_positions)
             iteration_times.append(time.perf_counter() - iteration_start)
 
-        # mismatch_found = check_previous_targets()sett
-        # if not mismatch_found:
-        #     print("All motor positions match the previous target position.")
+        mismatch_found = check_previous_targets()
+        if not mismatch_found:
+            print("All motor positions match the previous target position.")
 
         loop_elapsed = time.perf_counter() - loop_start
         print(f"\nLoop completed in {loop_elapsed:.3f} seconds")
