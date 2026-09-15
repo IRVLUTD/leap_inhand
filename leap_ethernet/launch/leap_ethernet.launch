@@ -1,0 +1,29 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="ip" default="10.42.42.50" doc="IP address of OpenRB-150 Ethernet bridge" />
+  <arg name="port" default="8888" doc="UDP port of OpenRB-150 Ethernet bridge" />
+  <arg name="frequency" default="60.0" doc="Control loop frequency in Hz" />
+  <arg name="timeout" default="0.05" doc="UDP socket timeout in seconds" />
+  <arg name="cmd_topic" default="/leap_hand/cmd" doc="Subscribed JointState command topic" />
+  <arg name="state_topic" default="/leap_hand/state" doc="Published JointState feedback topic" />
+  <arg name="current_limit" default="550" doc="Motor current limit in mA" />
+  <arg name="kP" default="400" doc="Position P gain" />
+  <arg name="kI" default="0" doc="Position I gain" />
+  <arg name="kD" default="0" doc="Position D gain" />
+  <arg name="auto_configure" default="true" doc="Configure operating mode and torque on start" />
+
+  <!-- Node -->
+  <node name="leap_ethernet_node" pkg="leap_ethernet" type="leap_ethernet_node.py" output="screen">
+    <param name="ip" value="$(arg ip)" />
+    <param name="port" value="$(arg port)" />
+    <param name="frequency" value="$(arg frequency)" />
+    <param name="timeout" value="$(arg timeout)" />
+    <param name="cmd_topic" value="$(arg cmd_topic)" />
+    <param name="state_topic" value="$(arg state_topic)" />
+    <param name="current_limit" value="$(arg current_limit)" />
+    <param name="kP" value="$(arg kP)" />
+    <param name="kI" value="$(arg kI)" />
+    <param name="kD" value="$(arg kD)" />
+    <param name="auto_configure" value="$(arg auto_configure)" />
+  </node>
+</launch>

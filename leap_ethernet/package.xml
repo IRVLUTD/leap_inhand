@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>leap_ethernet</name>
+  <version>0.1.0</version>
+  <description>UDP Ethernet control for the LEAP Hand via OpenRB-150</description>
+  <maintainer email="kevals2005@gmail.com">Keval Shah</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <export>
+  </export>
+</package>
