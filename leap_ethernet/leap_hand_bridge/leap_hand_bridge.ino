@@ -5,10 +5,11 @@
 
 /*
  * UDP Binary Packet Schema:
- * Total size: 86 bytes
+ * Total size: 87 bytes
  * 
  * struct UdpPacket {
  *     uint8_t cmd;         // 0=READ_ALL, 1=WRITE_ALL, 2=WRITE_READ_ALL, 3=READ, 4=WRITE, 5=WRITE_READ, 255=ERR
+ *     uint8_t flags;       // 0x00=NONE, 0x01=IGNORE_ERRORS (do not bubble up / block on errors)
  *     uint8_t addr;        // Dynamixel write address (or read address for pure READ) (0-255)
  *     uint8_t length;      // Write length (1, 2, or 4)
  *     uint8_t count;       // Number of motors in this packet (0-16)
@@ -40,6 +41,7 @@ EthernetUDP Udp;
 #pragma pack(push, 1)
 struct UdpPacket {
     uint8_t cmd;
+    uint8_t flags;
     uint8_t addr;
     uint8_t length;
     uint8_t count;
@@ -91,12 +93,41 @@ void sendResponse(UdpPacket* pkt) {
   Udp.endPacket();
 }
 
-void sendError(UdpPacket* pkt, int32_t err_code) {
+void sendError(UdpPacket* pkt, int32_t err_code, uint8_t motor_id = 255) {
+  if (pkt->flags & 0x01) {
+    // IGNORE_ERRORS flag set: do not bubble up error packet
+    return;
+  }
   pkt->cmd = 255;
   pkt->count = 1;
+  pkt->motors[0].id = motor_id;
   int32_t temp = err_code;
   memcpy(&pkt->motors[0].val, &temp, sizeof(int32_t)); // Safe unaligned store
   sendResponse(pkt);
+}
+
+// Check status packet error byte and report hardware error status (reg 70) if Alert bit is set
+bool checkAndReportMotorError(UdpPacket* pkt, uint8_t id, uint8_t dxl_err) {
+  if (dxl_err != 0) {
+    if (id < 16) torque_enabled[id] = false;
+    if (pkt->flags & 0x01) {
+      // IGNORE_ERRORS flag set: do not report or abort
+      return false;
+    }
+    int32_t err_code = -5;
+    if (dxl_err & 0x80) {
+      // Alert bit 7: Read Hardware Error Status (address 70, 1 byte)
+      uint8_t hw_err = 0;
+      drainDxlRx();
+      dxl.read(id, 70, 1, &hw_err, 1, 10);
+      err_code = -100 - hw_err;
+    } else {
+      err_code = -200 - dxl_err;
+    }
+    sendError(pkt, err_code, id);
+    return true;
+  }
+  return false;
 }
 
 // Helper to safely extract signed values based on data length
@@ -116,6 +147,7 @@ void packValue(uint8_t* buf, int32_t val, uint8_t item_len) {
 }
 
 void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
+  bool ignore_errors = (pkt->flags & 0x01) != 0;
   uint8_t target_addr = useReadAddr ? pkt->read_addr : pkt->addr;
   uint8_t target_length = useReadAddr ? pkt->read_length : pkt->length;
   sr_infos.addr = target_addr;
@@ -136,10 +168,17 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
     drainDxlRx();
     uint8_t cnt1 = dxl.syncRead(&sr_infos);
     for (int i = 0; i < cnt1; i++) {
+      if (checkAndReportMotorError(pkt, info_xels_sr[i].id, info_xels_sr[i].error)) {
+        return;
+      }
       pkt->motors[total_recv].id = info_xels_sr[i].id;
       int32_t temp_val = extractValue(sr_data_arr[i], target_length);
       memcpy(&pkt->motors[total_recv].val, &temp_val, sizeof(int32_t));
       total_recv++;
+    }
+    if (cnt1 < 8 && !ignore_errors) {
+      sendError(pkt, -4, cnt1); // -4: syncRead timed out
+      return;
     }
     
     // --- Batch 2: Motors 8 to 15 ---
@@ -151,10 +190,17 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
     drainDxlRx();
     uint8_t cnt2 = dxl.syncRead(&sr_infos);
     for (int i = 0; i < cnt2; i++) {
+      if (checkAndReportMotorError(pkt, info_xels_sr[i].id, info_xels_sr[i].error)) {
+        return;
+      }
       pkt->motors[total_recv].id = info_xels_sr[i].id;
       int32_t temp_val = extractValue(sr_data_arr[i + 8], target_length);
       memcpy(&pkt->motors[total_recv].val, &temp_val, sizeof(int32_t));
       total_recv++;
+    }
+    if (cnt2 < 8 && !ignore_errors) {
+      sendError(pkt, -4, 8 + cnt2); // -4: syncRead timed out
+      return;
     }
     
     pkt->count = total_recv;
@@ -164,11 +210,7 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
       memcpy(&pkt->motors[i].val, &zero, sizeof(int32_t));
     }
     
-    if (total_recv > 0) {
-      sendResponse(pkt);
-    } else {
-      sendError(pkt, -4); // -4: syncRead timed out
-    }
+    sendResponse(pkt);
   } else {
     sr_infos.xel_count = 0;
     for (int i = 0; i < pkt->count && i < 16; i++) {
@@ -178,7 +220,7 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
     }
 
     if (sr_infos.xel_count == 0) {
-      sendError(pkt, -1); // -1: No IDs provided
+      if (!ignore_errors) sendError(pkt, -1); // -1: No IDs provided
       return;
     }
     sr_infos.is_info_changed = true;
@@ -186,28 +228,31 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
     drainDxlRx();
 
     uint8_t recv_cnt = dxl.syncRead(&sr_infos);
-    if (recv_cnt > 0) {
-      pkt->count = recv_cnt;
-      for (int i = 0; i < recv_cnt; i++) {
-        pkt->motors[i].id = info_xels_sr[i].id;
-        int32_t temp_val = extractValue(sr_data_arr[i], target_length);
-        memcpy(&pkt->motors[i].val, &temp_val, sizeof(int32_t)); // Safe unaligned store
+    for (int i = 0; i < recv_cnt; i++) {
+      if (checkAndReportMotorError(pkt, info_xels_sr[i].id, info_xels_sr[i].error)) {
+        return;
       }
-      // Clean out unused slots so stale/dirty values from the request aren't sent back
-      for (int i = recv_cnt; i < 16; i++) {
-        pkt->motors[i].id = 255;
-        int32_t zero = 0;
-        memcpy(&pkt->motors[i].val, &zero, sizeof(int32_t));
-      }
-      sendResponse(pkt);
-    } else {
-      sendError(pkt, dxl.getLastLibErrCode());
+      pkt->motors[i].id = info_xels_sr[i].id;
+      int32_t temp_val = extractValue(sr_data_arr[i], target_length);
+      memcpy(&pkt->motors[i].val, &temp_val, sizeof(int32_t)); // Safe unaligned store
     }
+    if (recv_cnt < pkt->count && !ignore_errors) {
+      sendError(pkt, -4, pkt->motors[recv_cnt].id);
+      return;
+    }
+    pkt->count = recv_cnt;
+    // Clean out unused slots so stale/dirty values from the request aren't sent back
+    for (int i = recv_cnt; i < 16; i++) {
+      pkt->motors[i].id = 255;
+      int32_t zero = 0;
+      memcpy(&pkt->motors[i].val, &zero, sizeof(int32_t));
+    }
+    sendResponse(pkt);
   }
 }
 
 bool executeWrite(UdpPacket* pkt, bool isAll) {
-  // Serial.println("--- Entering executeWrite ---");
+  bool ignore_errors = (pkt->flags & 0x01) != 0;
   sw_infos.addr = pkt->addr;
   sw_infos.addr_length = pkt->length;
   sw_infos.xel_count = 0;
@@ -222,9 +267,9 @@ bool executeWrite(UdpPacket* pkt, bool isAll) {
       int32_t val;
       memcpy(&val, &pkt->motors[i].val, sizeof(int32_t)); // Safe unaligned load
       
-      if (is_movement_cmd && !torque_enabled[i]) {
+      if (is_movement_cmd && !torque_enabled[i] && !ignore_errors) {
         Serial.print("BLOCKED: Torque OFF for ID "); Serial.println(i);
-        sendError(pkt, -2); // -2: Torque is off
+        sendError(pkt, -2, i); // -2: Torque is off
         return false;
       }
       if (is_torque_cmd) torque_enabled[i] = (val != 0);
@@ -239,39 +284,35 @@ bool executeWrite(UdpPacket* pkt, bool isAll) {
       int32_t val;
       memcpy(&val, &pkt->motors[i].val, sizeof(int32_t)); // Safe unaligned load
       
-      if (is_movement_cmd && id < 16 && !torque_enabled[id]) {
+      if (is_movement_cmd && id < 16 && !torque_enabled[id] && !ignore_errors) {
         Serial.print("BLOCKED: Torque OFF for ID "); Serial.println(id);
-        sendError(pkt, -2); // -2: Torque is off
+        sendError(pkt, -2, id); // -2: Torque is off
         return false;
       }
       if (is_torque_cmd && id < 16) torque_enabled[id] = (val != 0);
       
       packValue(sw_data_arr[i], val, pkt->length);
-      info_xels_sw[i].id = id;
-      info_xels_sw[i].p_data = sw_data_arr[i];
+      info_xels_sw[sw_infos.xel_count].id = id;
+      info_xels_sw[sw_infos.xel_count].p_data = sw_data_arr[i];
       sw_infos.xel_count++;
     }
   }
 
   if (sw_infos.xel_count == 0) {
-    Serial.println("ERR: sw_infos.xel_count is 0");
-    sendError(pkt, -1);
+    if (!ignore_errors) sendError(pkt, -1);
     return false;
   }
   sw_infos.is_info_changed = true;
 
-  // Serial.print("Executing syncWrite for "); Serial.print(sw_infos.xel_count); Serial.println(" motors...");
   if (dxl.syncWrite(&sw_infos)) {
-    // Serial.println("syncWrite SUCCESS");
     drainDxlRx();
     delayMicroseconds(500);  // bus / DIR settle & motor write processing
     drainDxlRx();
     return true;
   } else {
     int32_t err = dxl.getLastLibErrCode();
-    // Serial.print("syncWrite FAILED, lib err: "); Serial.println(err);
-    sendError(pkt, err);
-    return false;
+    if (!ignore_errors) sendError(pkt, err);
+    return ignore_errors;
   }
 }
 

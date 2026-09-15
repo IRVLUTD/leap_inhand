@@ -49,6 +49,7 @@ class LeapEthernetNode:
         self.joint_names = [f"joint_{i}" for i in range(MOTOR_COUNT)]
         self.lock = threading.Lock()
         self.target_positions: list[float] = [0.0] * MOTOR_COUNT
+        self.latest_positions: list[float] | None = None
         self.has_received_cmd = False
 
         rospy.loginfo(
@@ -107,13 +108,14 @@ class LeapEthernetNode:
                 self.target_positions = [
                     float(initial_positions[i]) for i in range(MOTOR_COUNT)
                 ]
+                self.latest_positions = list(self.target_positions)
 
             rospy.loginfo(
                 "Holding initial positions and enabling torque on all motors..."
             )
             # Command initial position and enable torque
-            self.client.write_all(DataNames.GOAL_POSITION, self.target_positions)
             self.client.write_all(DataNames.TORQUE_ENABLE, [1] * MOTOR_COUNT)
+            self.client.write_all(DataNames.GOAL_POSITION, self.target_positions)
             rospy.loginfo("Hand configuration complete, torque enabled.")
 
         except Exception as e:
@@ -135,14 +137,48 @@ class LeapEthernetNode:
             self.has_received_cmd = True
 
     def _shutdown(self) -> None:
-        """Disable torque safely on shutdown."""
-        rospy.loginfo("Shutting down LeapEthernetNode, disabling torque...")
+        """Hold current positions safely on shutdown without dropping held objects."""
+        rospy.loginfo("Shutting down LeapEthernetNode, holding positions...")
         try:
-            self.client.write_all(DataNames.TORQUE_ENABLE, [0] * MOTOR_COUNT)
+            # Read current positions directly with ignore_errors=True in packet
+            current_positions = None
+            try:
+                current_positions = self.client.read_all(
+                    DataNames.PRESENT_POSITION, ignore_errors=True
+                )
+            except Exception as e:
+                rospy.logwarn(f"Could not read positions during shutdown: {e}")
+
+            with self.lock:
+                if current_positions and len(current_positions) == MOTOR_COUNT:
+                    hold_positions = [
+                        float(current_positions[i]) for i in range(MOTOR_COUNT)
+                    ]
+                elif self.latest_positions is not None:
+                    hold_positions = list(self.latest_positions)
+                else:
+                    hold_positions = None
+
+            if hold_positions is not None:
+                rospy.loginfo(
+                    "Holding current positions on motors (ignore_errors=True)..."
+                )
+                try:
+                    self.client.write_all(
+                        DataNames.GOAL_POSITION, hold_positions, ignore_errors=True
+                    )
+                    rospy.loginfo("Hold positions commanded successfully.")
+                except Exception as e:
+                    rospy.logwarn(
+                        f"Could not command hold positions during shutdown: {e}"
+                    )
+            else:
+                rospy.logwarn("No positions available to hold on shutdown.")
+
             self.client.close()
-            rospy.loginfo("Torque disabled successfully.")
+            rospy.loginfo("Shutdown completed.")
         except Exception as e:
-            rospy.logwarn(f"Failed to disable torque during shutdown: {e}")
+            rospy.logwarn(f"Error during shutdown: {e}")
 
     def spin(self) -> None:
         """Main control loop running at configured frequency."""
@@ -160,13 +196,16 @@ class LeapEthernetNode:
                     read_item=DataNames.PRESENT_POSITION,
                 )
 
+                with self.lock:
+                    self.latest_positions = [
+                        float(read_positions[i]) for i in range(MOTOR_COUNT)
+                    ]
+
                 # Publish current joint state
                 state_msg = JointState()
                 state_msg.header.stamp = rospy.Time.now()
                 state_msg.name = self.joint_names
-                state_msg.position = [
-                    float(read_positions[i]) for i in range(MOTOR_COUNT)
-                ]
+                state_msg.position = list(self.latest_positions)
                 self.state_pub.publish(state_msg)
 
             except ControlTableTimeout:
@@ -174,7 +213,8 @@ class LeapEthernetNode:
                     1.0, "Timeout communicating with OpenRB-150 over UDP"
                 )
             except ControlTableError as e:
-                rospy.logerr_throttle(1.0, f"Control table error from OpenRB: {e}")
+                rospy.logerr(f"Fatal motor/control table error: {e}")
+                raise
             except Exception as e:
                 rospy.logwarn_throttle(
                     1.0, f"Unexpected communication error: {e}"

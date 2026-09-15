@@ -48,7 +48,7 @@ MOTOR_COUNT = 16
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = PROJECT_ROOT / "logs"
 PLOT_DIR = PROJECT_ROOT / "plots"
-PACKET_FORMAT = "<BBBBBB" + "Bi" * MOTOR_COUNT
+PACKET_FORMAT = "<BBBBBBB" + "Bi" * MOTOR_COUNT
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
 READ_ALL = 0
 WRITE_ALL = 1
@@ -57,6 +57,8 @@ READ = 3
 WRITE = 4
 WRITE_READ = 5
 ERROR = 255
+FLAG_NONE = 0x00
+FLAG_IGNORE_ERRORS = 0x01
 
 # XC330-M288 register units → SI. Applied only on DataNames members that pass a
 # scale argument. Unscaled members stay raw integers.
@@ -167,9 +169,10 @@ ControlTableItem = DataNames
 
 @dataclass(frozen=True)
 class BinaryPacket:
-    """Decoded representation of one 86-byte protocol packet."""
+    """Decoded representation of one 87-byte protocol packet."""
 
     cmd: int
+    flags: int
     address: int
     length: int
     count: int
@@ -195,10 +198,27 @@ class ControlTableProtocolError(ValueError):
     """The OpenRB returned a response that did not match the protocol."""
 
 
+HW_ERROR_NAMES = {
+    0x01: "INPUT_VOLTAGE_ERROR",
+    0x04: "OVERHEATING_ERROR",
+    0x08: "MOTOR_ENCODER_ERROR",
+    0x10: "ELECTRICAL_SHOCK_ERROR",
+    0x20: "OVERLOAD_ERROR",
+}
+
+
+def decode_hardware_error(hw_err: int) -> list[str]:
+    """Decode Dynamixel Hardware Error Status register bits."""
+    errors = [name for bit, name in HW_ERROR_NAMES.items() if (hw_err & bit)]
+    return errors or ["HARDWARE_ALERT"]
+
+
 ERROR_REASONS = {
     -1: "NO_MOTOR_IDS",
     -2: "TORQUE_SAFETY",
     -3: "UNKNOWN_COMMAND",
+    -4: "SYNC_READ_TIMEOUT",
+    -5: "MOTOR_HARDWARE_ERROR",
 }
 
 
@@ -260,6 +280,7 @@ def _build_packet(
     count: int,
     motors: list[tuple[int, int]],
     read_item: ControlTableItem | str | None = None,
+    flags: int = FLAG_NONE,
 ) -> bytes:
     control_table_item, size = _item_metadata(item)
     if read_item is not None:
@@ -278,6 +299,7 @@ def _build_packet(
     packet = struct.pack(
         PACKET_FORMAT,
         command,
+        flags,
         control_table_item.value,
         size,
         count,
@@ -299,38 +321,47 @@ def unpack_packet(packet: bytes) -> BinaryPacket:
     unpacked = struct.unpack(PACKET_FORMAT, packet)
     motors = tuple(
         (unpacked[index], unpacked[index + 1])
-        for index in range(6, len(unpacked), 2)
+        for index in range(7, len(unpacked), 2)
     )
     return BinaryPacket(
-        unpacked[0], unpacked[1], unpacked[2], unpacked[3], unpacked[4], unpacked[5], motors
+        unpacked[0], unpacked[1], unpacked[2], unpacked[3], unpacked[4], unpacked[5], unpacked[6], motors
     )
 
 
-def build_read_all_command(item: ControlTableItem | str) -> bytes:
-    return _build_packet(READ_ALL, item, MOTOR_COUNT, list(enumerate([0] * MOTOR_COUNT)))
+def build_read_all_command(item: ControlTableItem | str, ignore_errors: bool = False) -> bytes:
+    flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
+    return _build_packet(READ_ALL, item, MOTOR_COUNT, list(enumerate([0] * MOTOR_COUNT)), flags=flags)
 
 
 def build_write_all_command(
-    item: ControlTableItem | str, values: list[int | float] | tuple[int | float, ...]
+    item: ControlTableItem | str,
+    values: list[int | float] | tuple[int | float, ...],
+    ignore_errors: bool = False,
 ) -> bytes:
     if len(values) != 16:
         raise ValueError("WRITE_ALL requires exactly 16 values")
     raw_values = [_to_raw(item, value) for value in values]
-    return _build_packet(WRITE_ALL, item, MOTOR_COUNT, list(enumerate(raw_values)))
+    flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
+    return _build_packet(WRITE_ALL, item, MOTOR_COUNT, list(enumerate(raw_values)), flags=flags)
 
 
 def build_read_command(
-    item: ControlTableItem | str, motor_ids: list[int] | tuple[int, ...]
+    item: ControlTableItem | str,
+    motor_ids: list[int] | tuple[int, ...],
+    ignore_errors: bool = False,
 ) -> bytes:
     if not motor_ids:
         raise ValueError("READ requires at least one motor ID")
     for motor_id in motor_ids:
         _validate_motor_id(motor_id)
-    return _build_packet(READ, item, len(motor_ids), [(motor_id, 0) for motor_id in motor_ids])
+    flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
+    return _build_packet(READ, item, len(motor_ids), [(motor_id, 0) for motor_id in motor_ids], flags=flags)
 
 
 def build_write_command(
-    item: ControlTableItem | str, values_by_motor: dict[int, int | float]
+    item: ControlTableItem | str,
+    values_by_motor: dict[int, int | float],
+    ignore_errors: bool = False,
 ) -> bytes:
     if not values_by_motor:
         raise ValueError("WRITE requires at least one motor ID and value")
@@ -338,23 +369,27 @@ def build_write_command(
     for motor_id, value in values_by_motor.items():
         _validate_motor_id(motor_id)
         parts.append((motor_id, _to_raw(item, value)))
-    return _build_packet(WRITE, item, len(parts), parts)
+    flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
+    return _build_packet(WRITE, item, len(parts), parts, flags=flags)
 
 
 def build_write_read_all_command(
     write_item: ControlTableItem | str,
     values: list[int | float] | tuple[int | float, ...],
     read_item: ControlTableItem | str | None = None,
+    ignore_errors: bool = False,
 ) -> bytes:
     if len(values) != 16:
         raise ValueError("WRITE_READ_ALL requires exactly 16 values")
     raw_values = [_to_raw(write_item, value) for value in values]
+    flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
     return _build_packet(
         WRITE_READ_ALL,
         write_item,
         MOTOR_COUNT,
         list(enumerate(raw_values)),
         read_item=read_item,
+        flags=flags,
     )
 
 
@@ -362,6 +397,7 @@ def build_write_read_command(
     write_item: ControlTableItem | str,
     values_by_motor: dict[int, int | float],
     read_item: ControlTableItem | str | None = None,
+    ignore_errors: bool = False,
 ) -> bytes:
     if not values_by_motor:
         raise ValueError("WRITE_READ requires at least one motor ID and value")
@@ -369,12 +405,14 @@ def build_write_read_command(
     for motor_id, value in values_by_motor.items():
         _validate_motor_id(motor_id)
         parts.append((motor_id, _to_raw(write_item, value)))
+    flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
     return _build_packet(
         WRITE_READ,
         write_item,
         len(parts),
         parts,
         read_item=read_item,
+        flags=flags,
     )
 
 
@@ -429,14 +467,31 @@ class ControlTableClient:
     def _response_error(self, response: BinaryPacket) -> None:
         if response.cmd != ERROR:
             return
+        motor_id = response.motors[0][0]
         error_code = response.motors[0][1]
-        reason = ERROR_REASONS.get(error_code, f"DYNAMIXEL_ERROR_{error_code}")
+
+        if error_code <= -200:
+            dxl_err = -error_code - 200
+            reason = f"MOTOR_PROTOCOL_ERROR (error byte 0x{dxl_err:02X})"
+        elif error_code <= -100:
+            hw_err = -error_code - 100
+            hw_names = decode_hardware_error(hw_err)
+            reason = f"MOTOR_HARDWARE_ERROR: {', '.join(hw_names)} (register 70 = 0x{hw_err:02X})"
+        else:
+            reason = ERROR_REASONS.get(error_code, f"DYNAMIXEL_ERROR_{error_code}")
+
+        if motor_id != 255:
+            reason = f"{reason} on motor {motor_id}"
+
         raise ControlTableError(reason, response)
 
     def _validate_response_header(
-        self, request: BinaryPacket, response: BinaryPacket
+        self, request: BinaryPacket, response: BinaryPacket, ignore_errors: bool = False
     ) -> None:
-        self._response_error(response)
+        if not ignore_errors:
+            self._response_error(response)
+        elif response.cmd == ERROR:
+            return
         if response.cmd != request.cmd:
             raise ControlTableProtocolError(
                 f"Expected response command {request.cmd}, got {response.cmd}"
@@ -446,17 +501,21 @@ class ControlTableClient:
         if (response.read_address, response.read_length) != (request.read_address, request.read_length):
             raise ControlTableProtocolError("Response read address or length did not match request")
 
-    def _read_values(self, command: bytes, motor_ids: list[int]) -> dict[int, int | float]:
+    def _read_values(
+        self, command: bytes, motor_ids: list[int], ignore_errors: bool = False
+    ) -> dict[int, int | float]:
         request = unpack_packet(command)
         response = unpack_packet(self._request(command))
-        self._validate_response_header(request, response)
-        if response.count != len(motor_ids):
+        self._validate_response_header(request, response, ignore_errors=ignore_errors)
+        if response.cmd == ERROR:
+            return {}
+        if response.count != len(motor_ids) and not ignore_errors:
             raise ControlTableProtocolError(
                 f"Expected {len(motor_ids)} read values, got {response.count}"
             )
         returned_motors = response.motors[: response.count]
         returned_ids = [motor_id for motor_id, _ in returned_motors]
-        if returned_ids != motor_ids:
+        if returned_ids != motor_ids and not ignore_errors:
             raise ControlTableProtocolError(
                 f"Expected motor IDs {motor_ids}, got {returned_ids}"
             )
@@ -466,32 +525,44 @@ class ControlTableClient:
             for motor_id, raw_value in returned_motors
         }
 
-    def _write(self, command: bytes) -> None:
+    def _write(self, command: bytes, ignore_errors: bool = False) -> None:
         request = unpack_packet(command)
         response = unpack_packet(self._request(command))
-        self._validate_response_header(request, response)
-        if response.count != request.count:
+        self._validate_response_header(request, response, ignore_errors=ignore_errors)
+        if response.cmd == ERROR:
+            return
+        if response.count != request.count and not ignore_errors:
             raise ControlTableProtocolError(
                 f"Expected {request.count} acknowledged writes, got {response.count}"
             )
-        if response.motors[: response.count] != request.motors[: request.count]:
+        if response.motors[: response.count] != request.motors[: request.count] and not ignore_errors:
             raise ControlTableProtocolError("Write acknowledgement did not echo the request")
 
-    def read_all(self, item: ControlTableItem | str) -> dict[int, int | float]:
+    def read_all(
+        self, item: ControlTableItem | str, ignore_errors: bool = False
+    ) -> dict[int, int | float]:
         """
         Read the value of a control table item for all motors.
 
         Args:
             item: The control table item to read.
+            ignore_errors: If True, do not raise errors on motor faults or timeouts.
 
         Returns:
             Motor ID to value. Position/velocity/acceleration items are SI
             (rad, rad/s, rad/s²); other items are raw integers.
         """
-        return self._read_values(build_read_all_command(item), list(range(16)))
+        return self._read_values(
+            build_read_all_command(item, ignore_errors=ignore_errors),
+            list(range(16)),
+            ignore_errors=ignore_errors,
+        )
 
     def write_all(
-        self, item: ControlTableItem | str, values: list[int | float] | tuple[int | float, ...]
+        self,
+        item: ControlTableItem | str,
+        values: list[int | float] | tuple[int | float, ...],
+        ignore_errors: bool = False,
     ) -> None:
         """
         Write a control-table value for all 16 motors.
@@ -500,15 +571,22 @@ class ControlTableClient:
             item: The control-table item to write.
             values: Exactly 16 values, ordered by motor ID 0 through 15.
                 Use SI units for scaled items (see DataNames ``SI:`` comments).
+            ignore_errors: If True, do not block on torque safety or raise on errors.
 
         Raises:
             ValueError: If values does not contain exactly 16 entries.
-            ControlTableError: If the OpenRB returns an ERR response.
+            ControlTableError: If the OpenRB returns an ERR response (when ignore_errors=False).
         """
-        self._write(build_write_all_command(item, values))
+        self._write(
+            build_write_all_command(item, values, ignore_errors=ignore_errors),
+            ignore_errors=ignore_errors,
+        )
 
     def read(
-        self, item: ControlTableItem | str, motor_ids: list[int] | tuple[int, ...]
+        self,
+        item: ControlTableItem | str,
+        motor_ids: list[int] | tuple[int, ...],
+        ignore_errors: bool = False,
     ) -> dict[int, int | float]:
         """
         Read the value of a control table item for multiple motors.
@@ -516,15 +594,23 @@ class ControlTableClient:
         Args:
             item: The control table item to read.
             motor_ids: A list of motor IDs to read from, in the range 0-15.
+            ignore_errors: If True, do not raise errors on motor faults or timeouts.
 
         Returns:
             Motor ID to value. Position/velocity/acceleration items are SI
             (rad, rad/s, rad/s²); other items are raw integers.
         """
-        return self._read_values(build_read_command(item, motor_ids), list(motor_ids))
+        return self._read_values(
+            build_read_command(item, motor_ids, ignore_errors=ignore_errors),
+            list(motor_ids),
+            ignore_errors=ignore_errors,
+        )
 
     def write(
-        self, item: ControlTableItem | str, values_by_motor: dict[int, int | float]
+        self,
+        item: ControlTableItem | str,
+        values_by_motor: dict[int, int | float],
+        ignore_errors: bool = False,
     ) -> None:
         """
         Write the value of a control table item for multiple motors.
@@ -532,17 +618,22 @@ class ControlTableClient:
         Args:
             item: The control table item to write.
             values_by_motor: Motor ID to value. Use SI units for scaled items.
+            ignore_errors: If True, do not block on torque safety or raise on errors.
 
         Raises:
-            ControlTableError: If the OpenRB returns an ERR response.
+            ControlTableError: If the OpenRB returns an ERR response (when ignore_errors=False).
         """
-        self._write(build_write_command(item, values_by_motor))
+        self._write(
+            build_write_command(item, values_by_motor, ignore_errors=ignore_errors),
+            ignore_errors=ignore_errors,
+        )
 
     def write_read_all(
         self,
         write_item: ControlTableItem | str,
         values: list[int | float] | tuple[int | float, ...],
         read_item: ControlTableItem | str | None = None,
+        ignore_errors: bool = False,
     ) -> dict[int, int | float]:
         """
         Write a control-table value for all 16 motors and return their read values.
@@ -552,17 +643,21 @@ class ControlTableClient:
             values: Exactly 16 values, ordered by motor ID 0 through 15.
                 Use SI units for scaled items.
             read_item: The control-table item to read. Defaults to write_item if None.
+            ignore_errors: If True, do not block on torque safety or raise on errors.
 
         Returns:
             Motor ID to value. Scaled items are returned in SI units.
 
         Raises:
             ValueError: If values does not contain exactly 16 entries.
-            ControlTableError: If the OpenRB returns an ERR response.
+            ControlTableError: If the OpenRB returns an ERR response (when ignore_errors=False).
         """
         return self._read_values(
-            build_write_read_all_command(write_item, values, read_item=read_item),
+            build_write_read_all_command(
+                write_item, values, read_item=read_item, ignore_errors=ignore_errors
+            ),
             list(range(16)),
+            ignore_errors=ignore_errors,
         )
 
     def write_read(
@@ -570,6 +665,7 @@ class ControlTableClient:
         write_item: ControlTableItem | str,
         values_by_motor: dict[int, int | float],
         read_item: ControlTableItem | str | None = None,
+        ignore_errors: bool = False,
     ) -> dict[int, int | float]:
         """
         Write the value of a control table item for multiple motors and return their read values.
@@ -578,16 +674,20 @@ class ControlTableClient:
             write_item: The control table item to write.
             values_by_motor: Motor ID to value. Use SI units for scaled items.
             read_item: The control-table item to read. Defaults to write_item if None.
+            ignore_errors: If True, do not block on torque safety or raise on errors.
 
         Returns:
             Motor ID to value. Scaled items are returned in SI units.
 
         Raises:
             ValueError: If values_by_motor is empty.
-            ControlTableError: If the OpenRB returns an ERR response.
+            ControlTableError: If the OpenRB returns an ERR response (when ignore_errors=False).
         """
         return self._read_values(
-            build_write_read_command(write_item, values_by_motor, read_item=read_item),
+            build_write_read_command(
+                write_item, values_by_motor, read_item=read_item, ignore_errors=ignore_errors
+            ),
             list(values_by_motor.keys()),
+            ignore_errors=ignore_errors,
         )
 
