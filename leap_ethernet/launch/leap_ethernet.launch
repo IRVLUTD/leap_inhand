@@ -6,7 +6,7 @@
   <arg name="timeout" default="0.05" doc="UDP socket timeout in seconds" />
   <arg name="cmd_topic" default="/leap_hand/cmd" doc="Subscribed JointState command topic" />
   <arg name="state_topic" default="/leap_hand/state" doc="Published JointState feedback topic" />
-  <arg name="current_limit" default="550" doc="Motor current limit in mA" />
+  <arg name="current_limit" default="600" doc="Motor current limit in mA" />
   <arg name="kP" default="400" doc="Position P gain" />
   <arg name="kI" default="0" doc="Position I gain" />
   <arg name="kD" default="0" doc="Position D gain" />

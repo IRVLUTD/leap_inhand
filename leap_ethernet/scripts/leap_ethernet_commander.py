@@ -55,7 +55,10 @@ class LeapCommanderNode:
             self.state_topic, JointState, self._state_callback, queue_size=1
         )
 
-        self.latest_state: list[float] | None = None
+        self.latest_position: list[float] | None = None
+        self.latest_velocity: list[float] | None = None
+        self.latest_effort: list[float] | None = None
+        self.latest_state: list[float] | None = None  # backward-compatibility alias
 
         rospy.loginfo(
             f"LeapCommanderNode started. Publishing to {self.cmd_topic} at "
@@ -64,7 +67,12 @@ class LeapCommanderNode:
 
     def _state_callback(self, msg: JointState) -> None:
         if len(msg.position) == MOTOR_COUNT:
+            self.latest_position = list(msg.position)
             self.latest_state = list(msg.position)
+        if len(msg.velocity) == MOTOR_COUNT:
+            self.latest_velocity = list(msg.velocity)
+        if len(msg.effort) == MOTOR_COUNT:
+            self.latest_effort = list(msg.effort)
 
     def compute_positions(self, t: float) -> list[float]:
         """Compute target positions for timestamp t based on selected mode."""
@@ -97,6 +105,14 @@ class LeapCommanderNode:
             msg.name = self.joint_names
             msg.position = positions
             self.cmd_pub.publish(msg)
+            if self.latest_velocity is not None and self.latest_effort is not None:
+                rospy.loginfo_throttle(
+                    2.0,
+                    f"Full State Telemetry -> "
+                    f"Pos: {[round(p, 2) for p in (self.latest_position or [])[:4]]}... | "
+                    f"Vel: {[round(v, 2) for v in self.latest_velocity[:4]]}... | "
+                    f"Effort: {[round(e, 1) for e in self.latest_effort[:4]]}... mA",
+                )
 
             rate.sleep()
 

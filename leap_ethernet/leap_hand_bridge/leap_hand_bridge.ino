@@ -5,19 +5,19 @@
 
 /*
  * UDP Binary Packet Schema:
- * Total size: 87 bytes
+ * Total size: 183 bytes
  * 
  * struct UdpPacket {
- *     uint8_t cmd;         // 0=READ_ALL, 1=WRITE_ALL, 2=WRITE_READ_ALL, 3=READ, 4=WRITE, 5=WRITE_READ, 255=ERR
+ *     uint8_t cmd;         // 0=READ_ALL, 1=WRITE_ALL, 2=WRITE_READ_ALL, 3=READ, 4=WRITE, 5=WRITE_READ, 254=REBOOT, 255=ERR
  *     uint8_t flags;       // 0x00=NONE, 0x01=IGNORE_ERRORS (do not bubble up / block on errors)
- *     uint8_t addr;        // Dynamixel write address (or read address for pure READ) (0-255)
- *     uint8_t length;      // Write length (1, 2, or 4)
+ *     uint8_t addr;        // Dynamixel write address (for REBOOT: 0=BOARD, 1=MOTORS, 2=ALL)
+ *     uint8_t length;      // Write length (1, 2, 4, or 10)
  *     uint8_t count;       // Number of motors in this packet (0-16)
  *     uint8_t read_addr;   // Dynamixel read address for WRITE_READ commands (0-255)
- *     uint8_t read_length; // Read length (1, 2, or 4)
+ *     uint8_t read_length; // Read length (1, 2, 4, or 10)
  *     struct {
  *         uint8_t id;      // Motor ID
- *         int32_t val;     // Value
+ *         uint8_t val[10]; // 80-bit raw value buffer
  *     } motors[16];
  * };
  */
@@ -49,7 +49,7 @@ struct UdpPacket {
     uint8_t read_length;
     struct {
         uint8_t id;
-        int32_t val;
+        uint8_t val[10];
     } motors[16];
 };
 #pragma pack(pop)
@@ -64,9 +64,9 @@ DYNAMIXEL::XELInfoSyncRead_t info_xels_sr[16];
 DYNAMIXEL::InfoSyncWriteInst_t sw_infos;
 DYNAMIXEL::XELInfoSyncWrite_t info_xels_sw[16];
 
-// Backing arrays for Sync data. Max length of any table item is 4 bytes.
-uint8_t sw_data_arr[16][4];
-uint8_t sr_data_arr[16][4];
+// Backing arrays for Sync data. Max length of any table item is 10 bytes.
+uint8_t sw_data_arr[16][10];
+uint8_t sr_data_arr[16][10];
 
 // Track torque state to prevent movement commands when torque is off
 bool torque_enabled[16] = {false};
@@ -84,7 +84,7 @@ void sendResponse(UdpPacket* pkt) {
   // Serial.print(" cnt:"); Serial.println(pkt->count);
   if (pkt->cmd == 255) {
     int32_t err_code = 0;
-    memcpy(&err_code, &pkt->motors[0].val, sizeof(int32_t)); // Safe unaligned load
+    memcpy(&err_code, pkt->motors[0].val, sizeof(int32_t)); // Safe unaligned load
     Serial.print("  [ERR CODE]: "); Serial.println(err_code);
   }
 
@@ -101,8 +101,9 @@ void sendError(UdpPacket* pkt, int32_t err_code, uint8_t motor_id = 255) {
   pkt->cmd = 255;
   pkt->count = 1;
   pkt->motors[0].id = motor_id;
+  memset(pkt->motors[0].val, 0, 10);
   int32_t temp = err_code;
-  memcpy(&pkt->motors[0].val, &temp, sizeof(int32_t)); // Safe unaligned store
+  memcpy(pkt->motors[0].val, &temp, sizeof(int32_t)); // Safe unaligned store
   sendResponse(pkt);
 }
 
@@ -130,32 +131,17 @@ bool checkAndReportMotorError(UdpPacket* pkt, uint8_t id, uint8_t dxl_err) {
   return false;
 }
 
-// Helper to safely extract signed values based on data length
-int32_t extractValue(uint8_t* buf, uint8_t item_len) {
-  if (item_len > 4) item_len = 4;
-  int32_t val = 0;
-  memcpy(&val, buf, item_len);
-  if (item_len == 1) val = (int8_t)val;   // Safely sign-extend
-  if (item_len == 2) val = (int16_t)val;  // Safely sign-extend
-  return val;
-}
-
-// Helper to safely pack signed values into the buffer
-void packValue(uint8_t* buf, int32_t val, uint8_t item_len) {
-  if (item_len > 4) item_len = 4;
-  memcpy(buf, &val, item_len);
-}
-
 void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
   bool ignore_errors = (pkt->flags & 0x01) != 0;
   uint8_t target_addr = useReadAddr ? pkt->read_addr : pkt->addr;
   uint8_t target_length = useReadAddr ? pkt->read_length : pkt->length;
+  if (target_length > 10) target_length = 10;
   sr_infos.addr = target_addr;
   sr_infos.addr_length = target_length;
   
   if (isAll) {
     // Split into two batches of 8 motors to keep serial RX traffic under the 
-    // SAMD21's 256-byte hardware ring buffer limit (each 8-motor batch is only ~142 bytes)
+    // SAMD21's 256-byte hardware ring buffer limit (each 8-motor batch of 10B is 160 bytes)
     uint8_t total_recv = 0;
     
     // --- Batch 1: Motors 0 to 7 ---
@@ -172,8 +158,8 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
         return;
       }
       pkt->motors[total_recv].id = info_xels_sr[i].id;
-      int32_t temp_val = extractValue(sr_data_arr[i], target_length);
-      memcpy(&pkt->motors[total_recv].val, &temp_val, sizeof(int32_t));
+      memset(pkt->motors[total_recv].val, 0, 10);
+      memcpy(pkt->motors[total_recv].val, sr_data_arr[i], target_length);
       total_recv++;
     }
     if (cnt1 < 8 && !ignore_errors) {
@@ -194,8 +180,8 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
         return;
       }
       pkt->motors[total_recv].id = info_xels_sr[i].id;
-      int32_t temp_val = extractValue(sr_data_arr[i + 8], target_length);
-      memcpy(&pkt->motors[total_recv].val, &temp_val, sizeof(int32_t));
+      memset(pkt->motors[total_recv].val, 0, 10);
+      memcpy(pkt->motors[total_recv].val, sr_data_arr[i + 8], target_length);
       total_recv++;
     }
     if (cnt2 < 8 && !ignore_errors) {
@@ -206,8 +192,7 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
     pkt->count = total_recv;
     for (int i = total_recv; i < 16; i++) {
       pkt->motors[i].id = 255;
-      int32_t zero = 0;
-      memcpy(&pkt->motors[i].val, &zero, sizeof(int32_t));
+      memset(pkt->motors[i].val, 0, 10);
     }
     
     sendResponse(pkt);
@@ -233,19 +218,17 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
         return;
       }
       pkt->motors[i].id = info_xels_sr[i].id;
-      int32_t temp_val = extractValue(sr_data_arr[i], target_length);
-      memcpy(&pkt->motors[i].val, &temp_val, sizeof(int32_t)); // Safe unaligned store
+      memset(pkt->motors[i].val, 0, 10);
+      memcpy(pkt->motors[i].val, sr_data_arr[i], target_length);
     }
     if (recv_cnt < pkt->count && !ignore_errors) {
       sendError(pkt, -4, pkt->motors[recv_cnt].id);
       return;
     }
     pkt->count = recv_cnt;
-    // Clean out unused slots so stale/dirty values from the request aren't sent back
     for (int i = recv_cnt; i < 16; i++) {
       pkt->motors[i].id = 255;
-      int32_t zero = 0;
-      memcpy(&pkt->motors[i].val, &zero, sizeof(int32_t));
+      memset(pkt->motors[i].val, 0, 10);
     }
     sendResponse(pkt);
   }
@@ -253,8 +236,9 @@ void handleRead(UdpPacket* pkt, bool isAll, bool useReadAddr = false) {
 
 bool executeWrite(UdpPacket* pkt, bool isAll) {
   bool ignore_errors = (pkt->flags & 0x01) != 0;
+  uint8_t write_len = pkt->length > 10 ? 10 : pkt->length;
   sw_infos.addr = pkt->addr;
-  sw_infos.addr_length = pkt->length;
+  sw_infos.addr_length = write_len;
   sw_infos.xel_count = 0;
   
   // Pre-calculate safety checks to save CPU cycles inside the loop
@@ -264,34 +248,31 @@ bool executeWrite(UdpPacket* pkt, bool isAll) {
   if (isAll) {
     sw_infos.xel_count = 16;
     for (int i = 0; i < 16; i++) {
-      int32_t val;
-      memcpy(&val, &pkt->motors[i].val, sizeof(int32_t)); // Safe unaligned load
-      
       if (is_movement_cmd && !torque_enabled[i] && !ignore_errors) {
         Serial.print("BLOCKED: Torque OFF for ID "); Serial.println(i);
         sendError(pkt, -2, i); // -2: Torque is off
         return false;
       }
-      if (is_torque_cmd) torque_enabled[i] = (val != 0);
+      if (is_torque_cmd) torque_enabled[i] = (pkt->motors[i].val[0] != 0);
       
-      packValue(sw_data_arr[i], val, pkt->length);
+      memset(sw_data_arr[i], 0, 10);
+      memcpy(sw_data_arr[i], pkt->motors[i].val, write_len);
       info_xels_sw[i].id = i; // For WRITE_ALL, assume IDs 0-15 sequentially
       info_xels_sw[i].p_data = sw_data_arr[i];
     }
   } else {
     for (int i = 0; i < pkt->count && i < 16; i++) {
       uint8_t id = pkt->motors[i].id;
-      int32_t val;
-      memcpy(&val, &pkt->motors[i].val, sizeof(int32_t)); // Safe unaligned load
       
       if (is_movement_cmd && id < 16 && !torque_enabled[id] && !ignore_errors) {
         Serial.print("BLOCKED: Torque OFF for ID "); Serial.println(id);
         sendError(pkt, -2, id); // -2: Torque is off
         return false;
       }
-      if (is_torque_cmd && id < 16) torque_enabled[id] = (val != 0);
+      if (is_torque_cmd && id < 16) torque_enabled[id] = (pkt->motors[i].val[0] != 0);
       
-      packValue(sw_data_arr[i], val, pkt->length);
+      memset(sw_data_arr[i], 0, 10);
+      memcpy(sw_data_arr[i], pkt->motors[i].val, write_len);
       info_xels_sw[sw_infos.xel_count].id = id;
       info_xels_sw[sw_infos.xel_count].p_data = sw_data_arr[i];
       sw_infos.xel_count++;
@@ -331,6 +312,34 @@ void handleWriteReadAll(UdpPacket* pkt) {
 void handleWriteRead(UdpPacket* pkt) {
   if (executeWrite(pkt, false)) {
     handleRead(pkt, false, true);
+  }
+}
+
+void handleReboot(UdpPacket* pkt) {
+  uint8_t target = pkt->addr; // 0=BOARD, 1=MOTORS, 2=ALL
+
+  if (target == 1 || target == 2) {
+    if (pkt->count == 0) {
+      dxl.reboot(DXL_BROADCAST_ID);
+      for (int i = 0; i < 16; i++) {
+        torque_enabled[i] = false;
+      }
+    } else {
+      for (int i = 0; i < pkt->count && i < 16; i++) {
+        uint8_t id = pkt->motors[i].id;
+        dxl.reboot(id);
+        if (id < 16) {
+          torque_enabled[id] = false;
+        }
+      }
+    }
+  }
+
+  sendResponse(pkt);
+
+  if (target == 0 || target == 2) {
+    delay(100);
+    NVIC_SystemReset();
   }
 }
 
@@ -384,7 +393,7 @@ void setup() {
 void loop() {
   int packetSize = Udp.parsePacket();
   
-  // Only process if the packet is exactly the size of our UdpPacket struct (84 bytes)
+  // Only process if the packet is exactly the size of our UdpPacket struct (183 bytes)
   if (packetSize == sizeof(UdpPacket)) {
     UdpPacket pkt;
     Udp.read((char*)&pkt, sizeof(UdpPacket));
@@ -404,6 +413,7 @@ void loop() {
     else if (pkt.cmd == 3) handleRead(&pkt, false);
     else if (pkt.cmd == 4) handleWrite(&pkt, false);
     else if (pkt.cmd == 5) handleWriteRead(&pkt);
+    else if (pkt.cmd == 254) handleReboot(&pkt);
     else sendError(&pkt, -3); // -3: Unknown command
     
   } else if (packetSize > 0) {
