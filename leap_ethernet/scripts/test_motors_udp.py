@@ -18,6 +18,7 @@ import random
 import statistics
 import time
 from datetime import datetime
+from typing import Dict, List, Union
 
 import matplotlib.pyplot as plt
 
@@ -54,7 +55,7 @@ def write_position_log_header() -> None:
 
 
 def append_position_log(
-    test_id: int, target_positions: list[float], read_positions: dict[int, int | float]
+    test_id: int, target_positions: List[float], read_positions: Dict[int, Union[int, float]]
 ) -> None:
     with open(POSITION_LOG, "a", newline="") as log_file:
         writer = csv.writer(log_file)
@@ -96,7 +97,7 @@ def check_previous_targets() -> bool:
     return mismatch_found
 
 
-def plot_iteration_times(iteration_times: list[float]) -> None:
+def plot_iteration_times(iteration_times: List[float]) -> None:
     plot_directory = PLOT_DIR / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     plot_directory.mkdir(parents=True, exist_ok=False)
 

@@ -2,9 +2,9 @@
 name = "leap-ethernet"
 version = "0.1.0"
 description = "UDP control-table client for the LEAP hand OpenRB-150 bridge"
-requires-python = ">=3.14"
+requires-python = "==3.8.10"
 dependencies = [
-    "matplotlib>=3.11.2",
+    "matplotlib>=3.7.3",
 ]
 
 [build-system]

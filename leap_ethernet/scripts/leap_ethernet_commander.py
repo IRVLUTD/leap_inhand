@@ -8,6 +8,7 @@ sinusoidal open/close trajectories to test the hand's motion.
 import math
 from pathlib import Path
 import sys
+from typing import List, Optional
 
 _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC_DIR) not in sys.path:
@@ -55,10 +56,10 @@ class LeapCommanderNode:
             self.state_topic, JointState, self._state_callback, queue_size=1
         )
 
-        self.latest_position: list[float] | None = None
-        self.latest_velocity: list[float] | None = None
-        self.latest_effort: list[float] | None = None
-        self.latest_state: list[float] | None = None  # backward-compatibility alias
+        self.latest_position: Optional[List[float]] = None
+        self.latest_velocity: Optional[List[float]] = None
+        self.latest_effort: Optional[List[float]] = None
+        self.latest_state: Optional[List[float]] = None  # backward-compatibility alias
 
         rospy.loginfo(
             f"LeapCommanderNode started. Publishing to {self.cmd_topic} at "
@@ -74,7 +75,7 @@ class LeapCommanderNode:
         if len(msg.effort) == MOTOR_COUNT:
             self.latest_effort = list(msg.effort)
 
-    def compute_positions(self, t: float) -> list[float]:
+    def compute_positions(self, t: float) -> List[float]:
         """Compute target positions for timestamp t based on selected mode."""
         if self.mode == "open":
             return list(OPEN_POSITION)

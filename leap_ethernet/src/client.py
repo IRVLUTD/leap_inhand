@@ -41,6 +41,7 @@ import struct
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
 DEFAULT_IP = "10.42.42.50"
 DEFAULT_PORT = 8888
@@ -89,9 +90,9 @@ class DataNames(Enum):
         cls,
         address: int,
         size: int,
-        scale: float | None = None,
+        scale: Optional[float] = None,
         offset: int = 0,
-        unique_id: object | None = None,
+        unique_id: Optional[object] = None,
     ):
         val = unique_id if unique_id is not None else address
         member = object.__new__(cls)
@@ -171,7 +172,7 @@ class DataNames(Enum):
         return object.__getattribute__(self, "_size")
 
     @property
-    def scale(self) -> float | None:
+    def scale(self) -> Optional[float]:
         """Raw-to-SI multiplier, or None if this register is left as an integer."""
         return object.__getattribute__(self, "_scale")
 
@@ -207,7 +208,7 @@ class BinaryPacket:
     count: int
     read_address: int
     read_length: int
-    motors: tuple[tuple[int, bytes], ...]
+    motors: Tuple[Tuple[int, bytes], ...]
 
 
 class ControlTableError(Exception):
@@ -236,7 +237,7 @@ HW_ERROR_NAMES = {
 }
 
 
-def decode_hardware_error(hw_err: int) -> list[str]:
+def decode_hardware_error(hw_err: int) -> List[str]:
     """Decode Dynamixel Hardware Error Status register bits."""
     errors = [name for bit, name in HW_ERROR_NAMES.items() if (hw_err & bit)]
     return errors or ["HARDWARE_ALERT"]
@@ -251,7 +252,7 @@ ERROR_REASONS = {
 }
 
 
-def _item_metadata(item: ControlTableItem | str) -> tuple[DataNames, int]:
+def _item_metadata(item: Union[ControlTableItem, str]) -> Tuple[DataNames, int]:
     """Return the control-table item and its byte size."""
     try:
         control_table_item = (
@@ -279,7 +280,7 @@ def _validate_value(value: int) -> None:
         raise ValueError("value must be a signed 32-bit integer")
 
 
-def _to_raw(item: ControlTableItem | str, value: int | float | bytes) -> int | bytes:
+def _to_raw(item: Union[ControlTableItem, str], value: Union[int, float, bytes]) -> Union[int, bytes]:
     """Convert an API value to a Dynamixel register integer or bytes."""
     if isinstance(value, bytes):
         return value
@@ -298,7 +299,7 @@ def _to_raw(item: ControlTableItem | str, value: int | float | bytes) -> int | b
     return raw_value
 
 
-def _from_raw(item: DataNames, value: int) -> int | float:
+def _from_raw(item: DataNames, value: int) -> Union[int, float]:
     """Convert a Dynamixel register integer to an API value."""
     scale = item.scale
     if scale is None:
@@ -306,7 +307,7 @@ def _from_raw(item: DataNames, value: int) -> int | float:
     return (value - item.offset) * scale
 
 
-def _pack_motor_val(size: int, value: int | float | bytes) -> bytes:
+def _pack_motor_val(size: int, value: Union[int, float, bytes]) -> bytes:
     """Pack an integer or byte value into a fixed 10-byte (80-bit) buffer."""
     if isinstance(value, bytes):
         return value.ljust(10, b"\x00")[:10]
@@ -332,10 +333,10 @@ def _unpack_value(length: int, raw_bytes: bytes) -> int:
 
 def _build_packet(
     command: int,
-    item: ControlTableItem | str,
+    item: Union[ControlTableItem, str],
     count: int,
-    motors: list[tuple[int, int | bytes]],
-    read_item: ControlTableItem | str | None = None,
+    motors: List[Tuple[int, Union[int, bytes]]],
+    read_item: Optional[Union[ControlTableItem, str]] = None,
     flags: int = FLAG_NONE,
 ) -> bytes:
     control_table_item, size = _item_metadata(item)
@@ -390,14 +391,14 @@ def unpack_packet(packet: bytes) -> BinaryPacket:
     )
 
 
-def build_read_all_command(item: ControlTableItem | str, ignore_errors: bool = False) -> bytes:
+def build_read_all_command(item: Union[ControlTableItem, str], ignore_errors: bool = False) -> bytes:
     flags = FLAG_IGNORE_ERRORS if ignore_errors else FLAG_NONE
     return _build_packet(READ_ALL, item, MOTOR_COUNT, list(enumerate([0] * MOTOR_COUNT)), flags=flags)
 
 
 def build_write_all_command(
-    item: ControlTableItem | str,
-    values: list[int | float] | tuple[int | float, ...],
+    item: Union[ControlTableItem, str],
+    values: Union[List[Union[int, float]], Tuple[Union[int, float], ...]],
     ignore_errors: bool = False,
 ) -> bytes:
     if len(values) != 16:
@@ -408,8 +409,8 @@ def build_write_all_command(
 
 
 def build_read_command(
-    item: ControlTableItem | str,
-    motor_ids: list[int] | tuple[int, ...],
+    item: Union[ControlTableItem, str],
+    motor_ids: Union[List[int], Tuple[int, ...]],
     ignore_errors: bool = False,
 ) -> bytes:
     if not motor_ids:
@@ -421,8 +422,8 @@ def build_read_command(
 
 
 def build_write_command(
-    item: ControlTableItem | str,
-    values_by_motor: dict[int, int | float],
+    item: Union[ControlTableItem, str],
+    values_by_motor: Dict[int, Union[int, float]],
     ignore_errors: bool = False,
 ) -> bytes:
     if not values_by_motor:
@@ -436,9 +437,9 @@ def build_write_command(
 
 
 def build_write_read_all_command(
-    write_item: ControlTableItem | str,
-    values: list[int | float] | tuple[int | float, ...],
-    read_item: ControlTableItem | str | None = None,
+    write_item: Union[ControlTableItem, str],
+    values: Union[List[Union[int, float]], Tuple[Union[int, float], ...]],
+    read_item: Optional[Union[ControlTableItem, str]] = None,
     ignore_errors: bool = False,
 ) -> bytes:
     if len(values) != 16:
@@ -456,9 +457,9 @@ def build_write_read_all_command(
 
 
 def build_write_read_command(
-    write_item: ControlTableItem | str,
-    values_by_motor: dict[int, int | float],
-    read_item: ControlTableItem | str | None = None,
+    write_item: Union[ControlTableItem, str],
+    values_by_motor: Dict[int, Union[int, float]],
+    read_item: Optional[Union[ControlTableItem, str]] = None,
     ignore_errors: bool = False,
 ) -> bytes:
     if not values_by_motor:
@@ -479,7 +480,7 @@ def build_write_read_command(
 
 def build_reboot_command(
     target: int = REBOOT_BOARD,
-    motor_ids: list[int] | tuple[int, ...] | None = None,
+    motor_ids: Optional[Union[List[int], Tuple[int, ...]]] = None,
 ) -> bytes:
     """Build a 183-byte REBOOT command packet.
 
@@ -529,7 +530,7 @@ class ControlTableClient:
         ip: str = DEFAULT_IP,
         port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
-        log_path: str | None = None,
+        log_path: Optional[str] = None,
     ) -> None:
         self.address = (ip, port)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -608,8 +609,8 @@ class ControlTableClient:
             raise ControlTableProtocolError("Response read address or length did not match request")
 
     def _read_values(
-        self, command: bytes, motor_ids: list[int], ignore_errors: bool = False
-    ) -> dict[int, int | float]:
+        self, command: bytes, motor_ids: List[int], ignore_errors: bool = False
+    ) -> Dict[int, Union[int, float]]:
         request = unpack_packet(command)
         response = unpack_packet(self._request(command))
         self._validate_response_header(request, response, ignore_errors=ignore_errors)
@@ -656,8 +657,8 @@ class ControlTableClient:
             raise ControlTableProtocolError("Write acknowledgement did not echo the request")
 
     def read_all(
-        self, item: ControlTableItem | str, ignore_errors: bool = False
-    ) -> dict[int, int | float]:
+        self, item: Union[ControlTableItem, str], ignore_errors: bool = False
+    ) -> Dict[int, Union[int, float]]:
         """
         Read the value of a control table item for all motors.
 
@@ -677,8 +678,8 @@ class ControlTableClient:
 
     def write_all(
         self,
-        item: ControlTableItem | str,
-        values: list[int | float] | tuple[int | float, ...],
+        item: Union[ControlTableItem, str],
+        values: Union[List[Union[int, float]], Tuple[Union[int, float], ...]],
         ignore_errors: bool = False,
     ) -> None:
         """
@@ -701,10 +702,10 @@ class ControlTableClient:
 
     def read(
         self,
-        item: ControlTableItem | str,
-        motor_ids: list[int] | tuple[int, ...],
+        item: Union[ControlTableItem, str],
+        motor_ids: Union[List[int], Tuple[int, ...]],
         ignore_errors: bool = False,
-    ) -> dict[int, int | float]:
+    ) -> Dict[int, Union[int, float]]:
         """
         Read the value of a control table item for multiple motors.
 
@@ -725,8 +726,8 @@ class ControlTableClient:
 
     def write(
         self,
-        item: ControlTableItem | str,
-        values_by_motor: dict[int, int | float],
+        item: Union[ControlTableItem, str],
+        values_by_motor: Dict[int, Union[int, float]],
         ignore_errors: bool = False,
     ) -> None:
         """
@@ -747,11 +748,11 @@ class ControlTableClient:
 
     def write_read_all(
         self,
-        write_item: ControlTableItem | str,
-        values: list[int | float] | tuple[int | float, ...],
-        read_item: ControlTableItem | str | None = None,
+        write_item: Union[ControlTableItem, str],
+        values: Union[List[Union[int, float]], Tuple[Union[int, float], ...]],
+        read_item: Optional[Union[ControlTableItem, str]] = None,
         ignore_errors: bool = False,
-    ) -> dict[int, int | float]:
+    ) -> Dict[int, Union[int, float]]:
         """
         Write a control-table value for all 16 motors and return their read values.
 
@@ -779,11 +780,11 @@ class ControlTableClient:
 
     def write_read(
         self,
-        write_item: ControlTableItem | str,
-        values_by_motor: dict[int, int | float],
-        read_item: ControlTableItem | str | None = None,
+        write_item: Union[ControlTableItem, str],
+        values_by_motor: Dict[int, Union[int, float]],
+        read_item: Optional[Union[ControlTableItem, str]] = None,
         ignore_errors: bool = False,
-    ) -> dict[int, int | float]:
+    ) -> Dict[int, Union[int, float]]:
         """
         Write the value of a control table item for multiple motors and return their read values.
 
@@ -811,7 +812,7 @@ class ControlTableClient:
     def reboot(
         self,
         target: int = REBOOT_BOARD,
-        motor_ids: list[int] | tuple[int, ...] | None = None,
+        motor_ids: Optional[Union[List[int], Tuple[int, ...]]] = None,
         wait_for_reconnect: bool = True,
         timeout: float = 10.0,
     ) -> bool:

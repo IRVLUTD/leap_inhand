@@ -4,8 +4,8 @@ Joint order is Index, Middle, Ring, Thumb; each finger is
 MCP side, MCP forward, PIP, DIP (IDs 0-15).
 """
 
-from collections.abc import Callable
 from math import pi
+from typing import Callable, Dict, List, Optional
 
 from client import ControlTableClient, DataNames, LOG_DIR, MOTOR_COUNT
 
@@ -48,7 +48,7 @@ def print_help(torque_enabled: bool = False) -> None:
     print(f"Torque is currently {'on' if torque_enabled else 'off'}.")
 
 
-def print_positions(positions: dict[int, float]) -> None:
+def print_positions(positions: Dict[int, float]) -> None:
     print("Present positions (rad)")
     print(f"  {'ID':>2}  {'Joint':<14}  {'rad':>8}")
     for motor_id in range(MOTOR_COUNT):
@@ -84,7 +84,7 @@ def disable_torque(client: ControlTableClient) -> None:
 
 def set_position(
     client: ControlTableClient,
-    position: list[float],
+    position: List[float],
     torque_enabled: bool,
     name: str,
 ) -> None:
@@ -98,7 +98,7 @@ def set_position(
     print(f"Set {name.lower()} position.")
 
 
-def run(read_key: Callable[[], str | None]) -> None:
+def run(read_key: Callable[[], Optional[str]]) -> None:
     """Run the control loop. ``read_key`` returns a lowercase letter or None."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     client = ControlTableClient(log_path=str(LOG_DIR / "hand_control_log.csv"))

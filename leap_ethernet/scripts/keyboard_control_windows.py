@@ -19,11 +19,12 @@ Arguments:
 """
 
 import msvcrt
+from typing import Optional
 
 from keyboard_control import run
 
 
-def read_key() -> str | None:
+def read_key() -> Optional[str]:
     key = msvcrt.getwch()
     if key in ("\x00", "\xe0"):
         msvcrt.getwch()

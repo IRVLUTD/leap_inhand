@@ -22,11 +22,12 @@ import select
 import sys
 import termios
 import tty
+from typing import Optional
 
 from keyboard_control import run
 
 
-def read_key() -> str | None:
+def read_key() -> Optional[str]:
     key = sys.stdin.read(1)
     if key == "\x1b":
         while select.select([sys.stdin], [], [], 0.0)[0]:

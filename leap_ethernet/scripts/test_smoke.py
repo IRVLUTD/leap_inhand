@@ -15,6 +15,7 @@ Arguments:
 
 import argparse
 import time
+from typing import Optional
 
 from client import ControlTableClient, DataNames, LOG_DIR, MOTOR_COUNT
 
@@ -78,7 +79,7 @@ def run_one_motor(client: ControlTableClient, motor_id: int) -> None:
 
 
 def disable_torque(
-    client: ControlTableClient, motor_id: int | None
+    client: ControlTableClient, motor_id: Optional[int]
 ) -> None:
     if motor_id is None:
         print("Disabling torque on all motors")
@@ -90,7 +91,7 @@ def disable_torque(
 
 def main() -> None:
     args = parse_args()
-    motor_id: int | None = args.motor
+    motor_id: Optional[int] = args.motor
     if motor_id is not None and not 0 <= motor_id < MOTOR_COUNT:
         raise SystemExit(f"--motor must be between 0 and {MOTOR_COUNT - 1}")
 

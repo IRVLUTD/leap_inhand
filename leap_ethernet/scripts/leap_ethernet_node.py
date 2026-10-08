@@ -10,6 +10,7 @@ round-trip, and publishes complete joint telemetry (sensor_msgs/JointState).
 from pathlib import Path
 import sys
 import threading
+from typing import List, Optional
 
 # Ensure leap_ethernet/src is accessible for client import
 _SRC_DIR = Path(__file__).resolve().parent.parent / "src"
@@ -55,10 +56,10 @@ class LeapEthernetNode:
         self.rebooting = False
         self.is_halted = False
         self.halt_reason = ""
-        self.target_positions: list[float] = [0.0] * MOTOR_COUNT
-        self.latest_positions: list[float] | None = None
-        self.latest_velocities: list[float] | None = None
-        self.latest_efforts: list[float] | None = None
+        self.target_positions: List[float] = [0.0] * MOTOR_COUNT
+        self.latest_positions: Optional[List[float]] = None
+        self.latest_velocities: Optional[List[float]] = None
+        self.latest_efforts: Optional[List[float]] = None
         self.has_received_cmd = False
 
         rospy.loginfo(
