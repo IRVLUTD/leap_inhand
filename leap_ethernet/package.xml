@@ -12,6 +12,8 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>actionlib</depend>
+  <depend>control_msgs</depend>
 
   <export>
   </export>

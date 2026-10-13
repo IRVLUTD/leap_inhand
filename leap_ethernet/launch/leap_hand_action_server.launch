@@ -1,0 +1,22 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="ip" default="10.42.42.50" doc="IP address of OpenRB-150 Ethernet bridge" />
+  <arg name="port" default="8888" doc="UDP port of OpenRB-150 Ethernet bridge" />
+  <arg name="current_limit" default="600" doc="Motor current limit in mA" />
+  <arg name="publish_to_joint_states" default="true" doc="Forward feedback to global /joint_states for TF & MoveIt" />
+
+  <!-- 1. Low-level UDP hardware driver -->
+  <include file="$(find leap_ethernet)/launch/leap_ethernet.launch">
+    <arg name="ip" value="$(arg ip)" />
+    <arg name="port" value="$(arg port)" />
+    <arg name="current_limit" value="$(arg current_limit)" />
+  </include>
+
+  <!-- 2. FollowJointTrajectory Action Server Bridge for MoveIt & Fetch controllers -->
+  <node name="leap_trajectory_action_server" pkg="leap_ethernet" type="leap_trajectory_action_server.py" output="screen">
+    <param name="action_name" value="leap_hand_controller/follow_joint_trajectory" />
+    <param name="cmd_topic" value="/leap_hand/cmd" />
+    <param name="state_topic" value="/leap_hand/state" />
+    <param name="publish_to_joint_states" value="$(arg publish_to_joint_states)" />
+  </node>
+</launch>

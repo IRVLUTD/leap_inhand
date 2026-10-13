@@ -1,0 +1,8 @@
+FROM ros:noetic-ros-base
+
+RUN apt-get update && apt-get install -y \
+    ros-noetic-foxglove-bridge \
+    && rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["roslaunch", "foxglove_bridge", "foxglove_bridge.launch"]
