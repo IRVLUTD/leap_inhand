@@ -134,63 +134,89 @@ class LeapTrajectoryActionServer:
         start_time = rospy.Time.now()
         last_point_time = 0.0
 
+        # Immediate 1-point goal (direct position command / fast response)
+        if len(points) == 1 and points[0].time_from_start.to_sec() <= 0.05:
+            target_positions = list(start_positions)
+            for i, pos in enumerate(points[0].positions):
+                motor_id = joint_indices[i]
+                if 0 <= motor_id < MOTOR_COUNT:
+                    target_positions[motor_id] = pos
+
+            cmd_msg = JointState()
+            cmd_msg.header.stamp = rospy.Time.now()
+            cmd_msg.name = self.joint_names
+            cmd_msg.position = target_positions
+            self.cmd_pub.publish(cmd_msg)
+
+            with self.lock:
+                self.current_positions = list(target_positions)
+
+            rospy.loginfo("Immediate goal dispatched directly to /leap_hand/cmd.")
+            result = FollowJointTrajectoryResult()
+            result.error_code = FollowJointTrajectoryResult.SUCCESSFUL
+            self.server.set_succeeded(result)
+            return
+
+        # Timed trajectory (smooth teleop or MoveIt path)
         for pt_idx, point in enumerate(points):
             pt_target_time = point.time_from_start.to_sec()
-            pt_duration = pt_target_time - last_point_time
-            if pt_duration <= 0.0:
-                pt_duration = 0.05  # minimum safety step
 
-            # Construct target for all 16 motors
             target_positions = list(start_positions)
             for i, pos in enumerate(point.positions):
                 motor_id = joint_indices[i]
                 if 0 <= motor_id < MOTOR_COUNT:
                     target_positions[motor_id] = pos
 
-            # Interpolate to this waypoint
-            pt_start_time = rospy.Time.now()
-            while not rospy.is_shutdown():
-                if self.server.is_preempt_requested():
-                    rospy.loginfo("Trajectory execution preempted.")
-                    self.server.set_preempted()
-                    return
+            # If this is the start waypoint at t=0, advance without delay
+            if pt_idx == 0 and pt_target_time <= 0.0 and len(points) > 1:
+                start_positions = list(target_positions)
+                continue
 
-                elapsed = (rospy.Time.now() - pt_start_time).to_sec()
-                t_ratio = min(1.0, elapsed / pt_duration)
-
-                # Smooth cosine interpolation
-                alpha = 0.5 * (1.0 - math.cos(math.pi * t_ratio))
-                interp_pos = [
-                    start_positions[k] + alpha * (target_positions[k] - start_positions[k])
-                    for k in range(MOTOR_COUNT)
-                ]
-
-                # Send command to leap_ethernet_node
+            pt_duration = pt_target_time - last_point_time
+            if pt_duration <= 0.0:
                 cmd_msg = JointState()
                 cmd_msg.header.stamp = rospy.Time.now()
                 cmd_msg.name = self.joint_names
-                cmd_msg.position = interp_pos
+                cmd_msg.position = target_positions
                 self.cmd_pub.publish(cmd_msg)
+            else:
+                pt_start_time = rospy.Time.now()
+                while not rospy.is_shutdown():
+                    if self.server.is_preempt_requested():
+                        rospy.loginfo("Trajectory execution preempted.")
+                        self.server.set_preempted()
+                        return
 
-                # Publish action feedback
-                feedback = FollowJointTrajectoryFeedback()
-                feedback.header.stamp = rospy.Time.now()
-                feedback.joint_names = self.joint_names
-                with self.lock:
-                    feedback.actual.positions = list(self.current_positions)
-                feedback.desired.positions = interp_pos
-                self.server.publish_feedback(feedback)
+                    elapsed = (rospy.Time.now() - pt_start_time).to_sec()
+                    t_ratio = min(1.0, elapsed / pt_duration)
 
-                if t_ratio >= 1.0:
-                    break
+                    interp_pos = [
+                        start_positions[k] + t_ratio * (target_positions[k] - start_positions[k])
+                        for k in range(MOTOR_COUNT)
+                    ]
 
-                rate.sleep()
+                    cmd_msg = JointState()
+                    cmd_msg.header.stamp = rospy.Time.now()
+                    cmd_msg.name = self.joint_names
+                    cmd_msg.position = interp_pos
+                    self.cmd_pub.publish(cmd_msg)
+
+                    feedback = FollowJointTrajectoryFeedback()
+                    feedback.header.stamp = rospy.Time.now()
+                    feedback.joint_names = self.joint_names
+                    with self.lock:
+                        feedback.actual.positions = list(self.current_positions)
+                    feedback.desired.positions = interp_pos
+                    self.server.publish_feedback(feedback)
+
+                    if t_ratio >= 1.0:
+                        break
+
+                    rate.sleep()
 
             start_positions = list(target_positions)
             last_point_time = pt_target_time
 
-        # Settling delay and final goal check
-        rospy.sleep(0.2)
         rospy.loginfo("Trajectory execution completed successfully.")
         result = FollowJointTrajectoryResult()
         result.error_code = FollowJointTrajectoryResult.SUCCESSFUL
