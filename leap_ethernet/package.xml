@@ -1,4 +1,6 @@
 <?xml version="1.0"?>
+<!-- ROS package metadata and dependencies for LEAP Ethernet control and the
+     UHAS-to-Fetch/LEAP bridge. Install UHAS and NumPy in the active environment. -->
 <package format="2">
   <name>leap_ethernet</name>
   <version>0.1.0</version>
@@ -14,6 +16,8 @@
   <depend>std_srvs</depend>
   <depend>actionlib</depend>
   <depend>control_msgs</depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
 
   <export>
   </export>

@@ -94,6 +94,96 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 ---
 
 
+## UHAS Control for Fetch + LEAP
+
+The [UHAS launch file](leap_ethernet/launch/uhas_fetch_leap.launch) starts the
+LEAP Ethernet driver and a controller that converts UHAS finger actions into
+joint targets and forwards wrist velocities to Fetch. Fetch's Cartesian arm
+controller must already be running; position the arm and torso manually.
+
+With ROS sourced, the workspace built, and UHAS installed in your Python 3 Conda
+environment, run the following in each terminal (adjust the workspace path if needed):
+
+```bash
+conda activate uhas
+source ~/Projects/uhas/devel/setup.bash
+```
+
+Start the driver and controller:
+
+```bash
+roslaunch leap_ethernet uhas_fetch_leap.launch
+```
+
+Then, in a second terminal, start the test publisher:
+
+```bash
+rosrun leap_ethernet uhas_dummy_publisher.py
+```
+
+The dummy runs its finger and wrist routine once, then holds the final hand
+target with zero wrist velocity. Edit `_routine_steps()` in
+[uhas_dummy_publisher.py](leap_ethernet/scripts/uhas_dummy_publisher.py) to comment
+out steps or change their durations and peak wrist speeds. You can also override
+individual durations, for example `_durations/index_curl:=4.0`; `0` skips a step.
+
+### Publishing from another source
+
+Instead of the dummy, publish `std_msgs/Float64MultiArray` messages to
+`/uhas/hand_joints` at a steady rate, such as 30 Hz. Each message must contain
+exactly **26 finite numbers** in this order:
+
+| Indices | Values | Meaning |
+| --- | --- | --- |
+| `0:3` | `vx, vy, vz` | Linear wrist velocities in m/s |
+| `3:6` | `wx, wy, wz` | Angular wrist velocities in rad/s |
+| `6:21` | 5 × 3 encompassing values, flattened by plane | UHAS finger bending targets |
+| `21:26` | 5 lateral values | UHAS finger spread targets |
+
+Finger planes are ordered **pinky, ring, middle, index, thumb**. LEAP's ring
+finger owns both the pinky and ring planes. Finger actions are absolute targets,
+not velocities or joint angles, and are not restricted to `[0, 1]`.
+
+For example, this publisher holds UHAS's stored LEAP open pose with no wrist motion:
+
+```python
+import numpy as np
+import rospy
+from std_msgs.msg import Float64MultiArray
+from uhas import UHAS
+
+rospy.init_node("my_uhas_publisher")
+publisher = rospy.Publisher("/uhas/hand_joints", Float64MultiArray, queue_size=1)
+hand = UHAS("leap", "right")
+hand.set_joint_order(["joint_%d" % i for i in range(16)])
+encompassing, laterals = hand.get_uhas(hand.q_open())
+action = np.concatenate([
+    np.zeros(6),
+    np.asarray(encompassing).reshape(-1),
+    np.asarray(laterals).reshape(-1),
+])
+
+rate = rospy.Rate(30)
+while not rospy.is_shutdown():
+    publisher.publish(Float64MultiArray(data=action.tolist()))
+    rate.sleep()
+```
+
+Use `hand.q_sphere()` instead of `hand.q_open()` for the stored sphere-grasp
+reference. Custom sources should update the same action layout on each cycle.
+
+Wrist velocities default to Fetch's **`base_link`** axes: +X forward, +Y left,
++Z upward when the base is level. To use wrist-relative axes, launch with
+`twist_frame:=wrist_roll_link` and express all incoming wrist velocities in that
+frame. The input array itself carries no frame identifier.
+
+Ctrl+C stops the publisher. When input expires (default `input_timeout:=0.25`
+seconds), the controller sends zero wrist velocity and holds fresh measured
+finger positions when available. Stop the launch file when finished. Run one
+action publisher at a time to avoid competing commands.
+
+---
+
 # Leap Hand API Original Readme Helpful Notes:
 
 #### Hardware Setup

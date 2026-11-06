@@ -1,0 +1,59 @@
+<!-- Start the LEAP Ethernet driver and translate streamed UHAS actions into
+     LEAP joint targets and Fetch Cartesian wrist velocities. Run the dummy
+     publisher separately to send a test routine. Activate the Python 3 Conda
+     environment and manually position the arm/torso before launching. -->
+<launch>
+  <!-- LEAP Ethernet hardware connection -->
+  <arg name="ip" default="10.42.42.50" />
+  <arg name="port" default="8888" />
+  <arg name="frequency" default="30.0" />
+  <arg name="timeout" default="0.05" />
+  <arg name="current_limit" default="600" />
+  <arg name="kP" default="400" />
+  <arg name="kI" default="0" />
+  <arg name="kD" default="0" />
+  <arg name="auto_configure" default="true" />
+
+  <!-- UHAS ROS input and safety settings -->
+  <arg name="input_topic" default="/uhas/hand_joints" />
+  <arg name="leap_cmd_topic" default="/leap_hand/cmd" />
+  <arg name="leap_state_topic" default="/leap_hand/state" />
+  <arg name="input_timeout" default="0.25" />
+  <arg name="twist_topic" default="/arm_controller/cartesian_twist/command" />
+  <!-- Velocity axes follow this frame; wrist-local +Z need not point upward. -->
+  <arg name="twist_frame" default="base_link" />
+  <!-- Linear norm in m/s; angular norm in rad/s. -->
+  <arg name="max_linear_speed" default="0.4" />
+  <arg name="max_angular_speed" default="1.5" />
+
+  <!-- Low-level LEAP driver only; no trajectory action server is required. -->
+  <include file="$(find leap_ethernet)/launch/leap_ethernet.launch">
+    <arg name="ip" value="$(arg ip)" />
+    <arg name="port" value="$(arg port)" />
+    <arg name="frequency" value="$(arg frequency)" />
+    <arg name="timeout" value="$(arg timeout)" />
+    <arg name="cmd_topic" value="$(arg leap_cmd_topic)" />
+    <arg name="state_topic" value="$(arg leap_state_topic)" />
+    <arg name="current_limit" value="$(arg current_limit)" />
+    <arg name="kP" value="$(arg kP)" />
+    <arg name="kI" value="$(arg kI)" />
+    <arg name="kD" value="$(arg kD)" />
+    <arg name="auto_configure" value="$(arg auto_configure)" />
+  </include>
+
+  <node
+    name="uhas_fetch_leap_controller"
+    pkg="leap_ethernet"
+    type="uhas_fetch_leap_controller.py"
+    output="screen"
+    required="true">
+    <param name="input_topic" value="$(arg input_topic)" />
+    <param name="leap_cmd_topic" value="$(arg leap_cmd_topic)" />
+    <param name="leap_state_topic" value="$(arg leap_state_topic)" />
+    <param name="input_timeout" value="$(arg input_timeout)" />
+    <param name="twist_topic" value="$(arg twist_topic)" />
+    <param name="twist_frame" value="$(arg twist_frame)" />
+    <param name="max_linear_speed" value="$(arg max_linear_speed)" />
+    <param name="max_angular_speed" value="$(arg max_angular_speed)" />
+  </node>
+</launch>
