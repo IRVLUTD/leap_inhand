@@ -3,7 +3,7 @@
   <arg name="ip" default="10.42.42.50" doc="IP address of OpenRB-150 Ethernet bridge" />
   <arg name="port" default="8888" doc="UDP port of OpenRB-150 Ethernet bridge" />
   <arg name="current_limit" default="600" doc="Motor current limit in mA" />
-  <arg name="publish_to_joint_states" default="true" doc="Forward feedback to global /joint_states for TF & MoveIt" />
+  <arg name="publish_to_joint_states" default="true" doc="Forward feedback to global /joint_states for TF &amp; MoveIt" />
 
   <!-- 1. Low-level UDP hardware driver -->
   <include file="$(find leap_ethernet)/launch/leap_ethernet.launch">
