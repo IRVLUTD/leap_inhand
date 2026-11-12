@@ -94,12 +94,26 @@ roslaunch leap_hand leap.launch urdf_file:=leap_right.urdf
 ---
 
 
+## Fetch Gripper Teleop over Ethernet
+
+```bash
+roslaunch leap_ethernet leap_hand_action_server.launch
+```
+
+Starts the Ethernet driver, trajectory server, and gripper teleop bridge;
+no separate gripper script is needed. Use `teleop_duration:=2.0` to adjust
+movement duration or `launch_gripper_action_server:=false` to omit the bridge.
+This is an alternative to the UHAS launch below; both start the hardware driver.
+
 ## UHAS Control for Fetch + LEAP
 
 The [UHAS launch file](leap_ethernet/launch/uhas_fetch_leap.launch) starts the
 LEAP Ethernet driver and a controller that converts UHAS finger actions into
 joint targets and forwards wrist velocities to Fetch. Fetch's Cartesian arm
 controller must already be running; position the arm and torso manually.
+It also forwards measured hand feedback from `/leap_hand/state` to
+`/joint_states` for TF and RViz. Set `publish_joint_states:=false` if another
+node already forwards that feedback.
 
 With ROS sourced, the workspace built, and UHAS installed in your Python 3 Conda
 environment, run the following in each terminal (adjust the workspace path if needed):
@@ -172,10 +186,15 @@ while not rospy.is_shutdown():
 Use `hand.q_sphere()` instead of `hand.q_open()` for the stored sphere-grasp
 reference. Custom sources should update the same action layout on each cycle.
 
-Wrist velocities default to Fetch's **`base_link`** axes: +X forward, +Y left,
-+Z upward when the base is level. To use wrist-relative axes, launch with
-`twist_frame:=wrist_roll_link` and express all incoming wrist velocities in that
-frame. The input array itself carries no frame identifier.
+Wrist velocities default to UHAS's **`uhas_sphere`** axes, which move with the
+hand. The controller publishes the pose returned by `hand.sphere_frame()` as
+a static TF from `hand.base_link` (the LEAP palm, `palm_lower`) to
+`uhas_sphere`. The robot's TF tree must connect the palm to Fetch's base.
+Use `sphere_frame:=my_sphere` to rename this frame. To use another command
+frame, launch with, for example, `twist_frame:=base_link` or
+`twist_frame:=wrist_roll_link` and express incoming velocities in that frame.
+Linear values remain in m/s and angular values in rad/s. The input array
+itself carries no frame identifier.
 
 Ctrl+C stops the publisher. When input expires (default `input_timeout:=0.25`
 seconds), the controller sends zero wrist velocity and holds fresh measured

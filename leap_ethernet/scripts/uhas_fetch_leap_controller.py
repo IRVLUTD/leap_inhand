@@ -4,7 +4,8 @@
 Subscribe to a 26-value Float64MultiArray: linear XYZ velocities (m/s), angular
 XYZ velocities (rad/s), 15 encompassing values, then five lateral values. UHAS
 converts the finger values into absolute joint targets. Wrist velocities use
-~twist_frame (default base_link) and are limited by vector norm.
+~twist_frame (default uhas_sphere) and are limited by vector norm. The sphere
+pose comes from UHAS and is published as a static TF relative to the LEAP palm.
 
 An independent watchdog stops expired wrist commands and holds recent measured
 finger positions. Run in the Python 3 environment containing UHAS and ROS.
@@ -17,9 +18,10 @@ from time import monotonic
 
 import numpy as np
 import rospy
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TransformStamped, TwistStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, Header
+from tf2_msgs.msg import TFMessage
 from uhas import UHAS
 
 
@@ -34,6 +36,24 @@ def finite_vector(values, size):
     return result
 
 
+def quaternion_from_matrix(pose):
+    """Return an XYZW unit quaternion from a pose using only NumPy.
+
+    The symmetric eigenproblem also handles rotations near 180 degrees.
+    Avoid importing tf: its package imports compiled ROS Python bindings.
+    """
+    r = np.asarray(pose, dtype=float)[:3, :3]
+    matrix = np.array([
+        [r[0, 0] - r[1, 1] - r[2, 2], r[0, 1] + r[1, 0], r[0, 2] + r[2, 0], r[2, 1] - r[1, 2]],
+        [r[0, 1] + r[1, 0], r[1, 1] - r[0, 0] - r[2, 2], r[1, 2] + r[2, 1], r[0, 2] - r[2, 0]],
+        [r[0, 2] + r[2, 0], r[1, 2] + r[2, 1], r[2, 2] - r[0, 0] - r[1, 1], r[1, 0] - r[0, 1]],
+        [r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1], np.trace(r)],
+    ])
+    _, eigenvectors = np.linalg.eigh(matrix)
+    quaternion = eigenvectors[:, -1]
+    return quaternion if quaternion[3] >= 0.0 else -quaternion
+
+
 class UHASFetchLeapController:
     """Convert the latest action while an independent watchdog stops stale motion."""
 
@@ -44,12 +64,14 @@ class UHASFetchLeapController:
         self.twist_topic = rospy.get_param("~twist_topic", "/arm_controller/cartesian_twist/command")
         self.leap_cmd_topic = rospy.get_param("~leap_cmd_topic", "/leap_hand/cmd")
         self.leap_state_topic = rospy.get_param("~leap_state_topic", "/leap_hand/state")
-        self.twist_frame = rospy.get_param("~twist_frame", "base_link")
+        self.sphere_frame = rospy.get_param("~sphere_frame", "uhas_sphere")
+        self.twist_frame = rospy.get_param("~twist_frame", self.sphere_frame)
         self.input_timeout = self._positive_param("~input_timeout", 0.25)
         self.max_linear_speed = self._positive_param("~max_linear_speed", 0.4)
         self.max_angular_speed = self._positive_param("~max_angular_speed", 1.5)
         self.hand = UHAS("leap", "right")
         self.hand.set_joint_order(JOINT_NAMES)
+        self._publish_sphere_frame()
 
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -74,6 +96,22 @@ class UHASFetchLeapController:
         self._watchdog.daemon = True
         self._watchdog.start()
         rospy.loginfo("UHAS Fetch/LEAP ready; waiting for input. Arm and torso positioning are manual.")
+
+    def _publish_sphere_frame(self):
+        """Expose UHAS's fixed sphere pose in the robot's TF tree."""
+        pose = np.asarray(self.hand.sphere_frame(), dtype=float)
+        transform = TransformStamped()
+        transform.header.stamp = rospy.Time.now()
+        # UHAS base_link names the hand's palm, not Fetch's mobile base_link.
+        transform.header.frame_id = self.hand.base_link
+        transform.child_frame_id = self.sphere_frame
+        translation = transform.transform.translation
+        translation.x, translation.y, translation.z = pose[:3, 3]
+        rotation = transform.transform.rotation
+        rotation.x, rotation.y, rotation.z, rotation.w = quaternion_from_matrix(pose)
+        # Match StaticTransformBroadcaster without loading tf2's compiled extension.
+        self._sphere_tf_pub = rospy.Publisher("/tf_static", TFMessage, queue_size=1, latch=True)
+        self._sphere_tf_pub.publish(TFMessage(transforms=[transform]))
 
     @staticmethod
     def _positive_param(name, default):

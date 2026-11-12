@@ -18,6 +18,9 @@
   <depend>control_msgs</depend>
 
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
 
   <export>
   </export>

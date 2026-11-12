@@ -25,6 +25,7 @@ install(PROGRAMS
   scripts/leap_ethernet_commander.py
   scripts/leap_ethernet_reboot.py
   scripts/leap_trajectory_action_server.py
+  scripts/leap_gripper_action_server.py
   scripts/uhas_fetch_leap_controller.py
   scripts/uhas_dummy_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

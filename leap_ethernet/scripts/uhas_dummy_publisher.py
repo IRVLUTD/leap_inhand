@@ -20,7 +20,6 @@ import rospy
 from std_msgs.msg import Float64MultiArray
 from uhas import UHAS
 
-
 JOINT_NAMES = ["joint_%d" % index for index in range(16)]
 
 
@@ -33,7 +32,10 @@ def finite_vector(values, size):
 
 
 # A missing target holds the previous hand pose; twist is (axis, peak velocity).
-RoutineStep = namedtuple("RoutineStep", "name label seconds target twist", defaults=(None, None))
+# action optionally supplies a complete, constant 26-value command instead.
+RoutineStep = namedtuple(
+    "RoutineStep", "name label seconds target twist action", defaults=(None, None, None)
+)
 
 
 class UHASDummyPublisher:
@@ -46,12 +48,18 @@ class UHASDummyPublisher:
         self._last_action = None
         self.topic = rospy.get_param("~topic", "/uhas/hand_joints")
         self.rate_hz = float(rospy.get_param("~rate", 30.0))
-        self.transition_duration = float(
-            rospy.get_param("~transition_duration", 2.0)
-        )
+        self.transition_duration = float(rospy.get_param("~transition_duration", 2.0))
         self.hold_duration = float(rospy.get_param("~hold_duration", 1.0))
         self.grasp_scale = float(rospy.get_param("~grasp_scale", 1.0))
-        finite_vector([self.rate_hz, self.transition_duration, self.hold_duration, self.grasp_scale], 4)
+        finite_vector(
+            [
+                self.rate_hz,
+                self.transition_duration,
+                self.hold_duration,
+                self.grasp_scale,
+            ],
+            4,
+        )
         if (
             self.rate_hz <= 0.0
             or self.transition_duration <= 0.0
@@ -63,19 +71,21 @@ class UHASDummyPublisher:
                 "~hold_duration must be non-negative, and ~grasp_scale must be in [0, 1]"
             )
 
-        self.publisher = rospy.Publisher(
-            self.topic, Float64MultiArray, queue_size=1
-        )
+        self.publisher = rospy.Publisher(self.topic, Float64MultiArray, queue_size=1)
         hand = UHAS("leap", "right")
         hand.set_joint_order(JOINT_NAMES)
         actions = []
         for pose in (hand.q_open(), hand.q_sphere()):
             encompassing, laterals = hand.get_uhas(pose)
-            actions.append(np.concatenate((
-                np.zeros(6),
-                np.asarray(encompassing).reshape(-1),
-                np.asarray(laterals).reshape(-1),
-            )))
+            actions.append(
+                np.concatenate(
+                    (
+                        np.zeros(6),
+                        np.asarray(encompassing).reshape(-1),
+                        np.asarray(laterals).reshape(-1),
+                    )
+                )
+            )
         self.open_action, full_grasp_action = actions
         self.grasp_action = self.open_action + self.grasp_scale * (
             full_grasp_action - self.open_action
@@ -87,7 +97,9 @@ class UHASDummyPublisher:
         # Canonical planes: pinky, ring, middle, index, thumb. LEAP's ring
         # owns both pinky/ring planes, so change both to retain its full motion.
         for plane in planes:
-            target[6 + 3 * plane:9 + 3 * plane] = self.grasp_action[6 + 3 * plane:9 + 3 * plane]
+            target[6 + 3 * plane : 9 + 3 * plane] = self.grasp_action[
+                6 + 3 * plane : 9 + 3 * plane
+            ]
             target[21 + plane] = self.grasp_action[21 + plane]
         return target
 
@@ -98,6 +110,12 @@ class UHASDummyPublisher:
         previous hand pose. ROS ~durations/<name> overrides a row's duration;
         zero skips it. Wrist twist tuples contain (axis, peak velocity), where
         axes 0..2 are linear XYZ (m/s) and 3..5 are angular XYZ (rad/s).
+
+        Alternatively, action=[...] publishes exactly 26 finite floats for the
+        entire step, without interpolation or a wrist pulse. Order: linear XYZ,
+        angular XYZ, 15 encompassing values, five laterals. Do not combine action
+        with target or twist. Wrist velocity stops when the step ends; subsequent
+        steps retain its hand pose unless they specify a new target.
         """
         opened = self.open_action
         grasp = self.grasp_action
@@ -109,66 +127,95 @@ class UHASDummyPublisher:
         thumb = self._finger_pose((4,))
 
         # Change any seconds value below independently (e.g. transition -> 4.0).
-        # Wrist directions use the controller's configured frame, which defaults
-        # to wrist_roll_link. Positive Z is not necessarily ground-relative up.
+        # Wrist directions use the controller's command frame: uhas_sphere by
+        # default. Its axes move with the hand; +Z is not necessarily world-up.
+        # If twist_frame is overridden at launch, use that frame's axes instead.
         return [
+            # Uncomment and edit all 26 values to send a complete action directly.
+            # RoutineStep("custom", "Direct action", 2.0, action=[
+            #     0.0, 0.0, 0.0,                 # Linear XYZ (m/s).
+            #     0.0, 0.0, 0.0,                 # Angular XYZ (rad/s).
+            #     0.0, 0.0, 0.0,                 # Pinky encompassing.
+            #     0.0, 0.0, 0.0,                 # Ring encompassing.
+            #     0.0, 0.0, 0.0,                 # Middle encompassing.
+            #     0.0, 0.0, 0.0,                 # Index encompassing.
+            #     0.0, 0.0, 0.0,                 # Thumb encompassing.
+            #     0.0, 0.0, 0.0, 0.0, 0.0,      # Five laterals.
+            # ]),
             RoutineStep("initial_open", "Hand opening; wrist stationary", 2.0, opened),
-
             # Index finger.
             RoutineStep("index_curl", "Index finger curling", transition, index),
             RoutineStep("index_hold", "Holding index finger curled", hold),
             RoutineStep("index_open", "Index finger opening", transition, opened),
-
             # Middle finger.
             RoutineStep("middle_curl", "Middle finger curling", transition, middle),
             RoutineStep("middle_hold", "Holding middle finger curled", hold),
             RoutineStep("middle_open", "Middle finger opening", transition, opened),
-
             # Ring finger.
             RoutineStep("ring_curl", "Ring finger curling", transition, ring),
             RoutineStep("ring_hold", "Holding ring finger curled", hold),
             RoutineStep("ring_open", "Ring finger opening", transition, opened),
-
             # Thumb.
             RoutineStep("thumb_curl", "Thumb finger curling", transition, thumb),
             RoutineStep("thumb_hold", "Holding thumb finger curled", hold),
             RoutineStep("thumb_open", "Thumb finger opening", transition, opened),
-
             # Whole-hand grasp.
-            RoutineStep("grasp_close", "All fingers closing into grasp", transition, grasp),
+            RoutineStep(
+                "grasp_close", "All fingers closing into grasp", transition, grasp
+            ),
             RoutineStep("grasp_hold", "Holding grasp; wrist stationary", hold),
             RoutineStep("grasp_open", "All fingers opening", transition, opened),
-
             # Wrist roll: positive pulse, pause, negative pulse, pause.
-            RoutineStep("roll_positive", "Wrist rolling positive (+X)", 1.0, twist=(3, 0.3)),
-            RoutineStep("roll_positive_pause", "Wrist stopped; holding hand steady", 1.0),
-            RoutineStep("roll_negative", "Wrist rolling back (-X)", 1.0, twist=(3, -0.3)),
-            RoutineStep("roll_negative_pause", "Wrist stopped; holding hand steady", 1.0),
-
+            RoutineStep(
+                "roll_positive", "Wrist rolling positive (+X)", 1.0, twist=(3, 0.3)
+            ),
+            RoutineStep(
+                "roll_positive_pause", "Wrist stopped; holding hand steady", 1.0
+            ),
+            RoutineStep(
+                "roll_negative", "Wrist rolling back (-X)", 1.0, twist=(3, -0.3)
+            ),
+            RoutineStep(
+                "roll_negative_pause", "Wrist stopped; holding hand steady", 1.0
+            ),
             # Wrist pitch.
-            RoutineStep("pitch_positive", "Wrist pitching positive (+Y)", 1.0, twist=(4, 0.3)),
-            RoutineStep("pitch_positive_pause", "Wrist stopped; holding hand steady", 1.0),
-            RoutineStep("pitch_negative", "Wrist pitching back (-Y)", 1.0, twist=(4, -0.3)),
-            RoutineStep("pitch_negative_pause", "Wrist stopped; holding hand steady", 1.0),
-
+            RoutineStep(
+                "pitch_positive", "Wrist pitching positive (+Y)", 1.0, twist=(4, 0.3)
+            ),
+            RoutineStep(
+                "pitch_positive_pause", "Wrist stopped; holding hand steady", 1.0
+            ),
+            RoutineStep(
+                "pitch_negative", "Wrist pitching back (-Y)", 1.0, twist=(4, -0.3)
+            ),
+            RoutineStep(
+                "pitch_negative_pause", "Wrist stopped; holding hand steady", 1.0
+            ),
             # Wrist yaw.
-            RoutineStep("yaw_positive", "Wrist yawing positive (+Z)", 1.0, twist=(5, 0.3)),
-            RoutineStep("yaw_positive_pause", "Wrist stopped; holding hand steady", 1.0),
+            RoutineStep(
+                "yaw_positive", "Wrist yawing positive (+Z)", 1.0, twist=(5, 0.3)
+            ),
+            RoutineStep(
+                "yaw_positive_pause", "Wrist stopped; holding hand steady", 1.0
+            ),
             RoutineStep("yaw_negative", "Wrist yawing back (-Z)", 1.0, twist=(5, -0.3)),
-            RoutineStep("yaw_negative_pause", "Wrist stopped; holding hand steady", 1.0),
-
+            RoutineStep(
+                "yaw_negative_pause", "Wrist stopped; holding hand steady", 1.0
+            ),
             # Wrist translation along X.
-            RoutineStep("x_positive", "Wrist moving forward (+X)", 1.0, twist=(0, 0.15)),
+            RoutineStep(
+                "x_positive", "Wrist moving forward (+X)", 1.0, twist=(0, 0.15)
+            ),
             RoutineStep("x_positive_pause", "Wrist stopped; holding hand steady", 1.0),
-            RoutineStep("x_negative", "Wrist moving backward (-X)", 1.0, twist=(0, -0.15)),
+            RoutineStep(
+                "x_negative", "Wrist moving backward (-X)", 1.0, twist=(0, -0.15)
+            ),
             RoutineStep("x_negative_pause", "Wrist stopped; holding hand steady", 1.0),
-
             # Wrist translation along Y.
             RoutineStep("y_positive", "Wrist moving left (+Y)", 1.0, twist=(1, 0.15)),
             RoutineStep("y_positive_pause", "Wrist stopped; holding hand steady", 1.0),
             RoutineStep("y_negative", "Wrist moving right (-Y)", 1.0, twist=(1, -0.15)),
             RoutineStep("y_negative_pause", "Wrist stopped; holding hand steady", 1.0),
-
             # Wrist translation along Z.
             RoutineStep("z_positive", "Wrist moving up (+Z)", 1.0, twist=(2, 0.15)),
             RoutineStep("z_positive_pause", "Wrist stopped; holding hand steady", 1.0),
@@ -185,12 +232,29 @@ class UHASDummyPublisher:
             try:
                 duration = finite_vector([rospy.get_param(name, step.seconds)], 1)[0]
             except (ValueError, TypeError, OverflowError) as error:
-                raise rospy.ROSException("%s must be finite seconds: %s" % (name, error))
+                raise rospy.ROSException(
+                    "%s must be finite seconds: %s" % (name, error)
+                )
             if duration < 0.0:
                 raise rospy.ROSException("%s must be non-negative seconds" % name)
             if duration == 0.0:
                 continue
-            target = current.copy() if step.target is None else step.target.copy()
+            action = None
+            if step.action is not None:
+                if step.target is not None or step.twist is not None:
+                    raise rospy.ROSException(
+                        "%s: action cannot be combined with target or twist" % step.name
+                    )
+                try:
+                    action = np.asarray(finite_vector(step.action, 26))
+                except (ValueError, TypeError, OverflowError) as error:
+                    raise rospy.ROSException(
+                        "%s: invalid action: %s" % (step.name, error)
+                    )
+                target = action.copy()
+                target[:6] = 0.0
+            else:
+                target = current.copy() if step.target is None else step.target.copy()
             twist = None
             label = step.label
             if step.twist is not None:
@@ -198,7 +262,7 @@ class UHASDummyPublisher:
                 twist = np.zeros(6)
                 twist[axis] = speed
                 label += " in configured command frame"
-            phases.append((label, current.copy(), target, duration, twist))
+            phases.append((label, current.copy(), target, duration, twist, action))
             current = target.copy()
         # Hold the last enabled target, even when sections were removed.
         return phases, current
@@ -210,7 +274,7 @@ class UHASDummyPublisher:
         self.publisher.publish(message)
         self._last_action = action.copy()
 
-    def _run_phase(self, label, start, end, duration, twist, rate):
+    def _run_phase(self, label, start, end, duration, twist, rate, direct_action=None):
         """Narrate and publish a smooth timed phase, returning false on shutdown."""
         rospy.loginfo(label)
         started = monotonic()
@@ -222,11 +286,14 @@ class UHASDummyPublisher:
                 stopped[:6] = 0.0
                 self._publish_action(stopped)
                 return True
-            action = self._interpolate(start, end, ratio)
-            action[:6] = 0.0
-            if twist is not None:
-                # Sine pulse travel is 2 * peak_speed * duration / pi.
-                action[:6] = twist * np.sin(np.pi * max(0.0, ratio))
+            if direct_action is not None:
+                action = direct_action.copy()
+            else:
+                action = self._interpolate(start, end, ratio)
+                action[:6] = 0.0
+                if twist is not None:
+                    # Sine pulse travel is 2 * peak_speed * duration / pi.
+                    action[:6] = twist * np.sin(np.pi * max(0.0, ratio))
             self._publish_action(action)
             rate.sleep()
         return False
@@ -240,12 +307,18 @@ class UHASDummyPublisher:
                 rate.sleep()
             if rospy.is_shutdown():
                 return
-            rospy.loginfo("Starting configured routine. Wrist directions use the controller's command frame.")
+            rospy.loginfo(
+                "Starting configured routine. Wrist directions use the controller's command frame."
+            )
             phases, resting = self._build_routine()
-            for label, start, end, duration, twist in phases:
-                if not self._run_phase(label, start, end, duration, twist, rate):
+            for label, start, end, duration, twist, action in phases:
+                if not self._run_phase(
+                    label, start, end, duration, twist, rate, action
+                ):
                     return
-            rospy.loginfo("Routine complete. Holding last hand target with zero wrist velocity; Ctrl+C to stop publishing.")
+            rospy.loginfo(
+                "Routine complete. Holding last hand target with zero wrist velocity; Ctrl+C to stop publishing."
+            )
             while not rospy.is_shutdown():
                 self._publish_action(resting)
                 rate.sleep()

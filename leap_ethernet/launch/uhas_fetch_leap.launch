@@ -18,10 +18,14 @@
   <arg name="input_topic" default="/uhas/hand_joints" />
   <arg name="leap_cmd_topic" default="/leap_hand/cmd" />
   <arg name="leap_state_topic" default="/leap_hand/state" />
+  <!-- Disable if another node already forwards this feedback to /joint_states. -->
+  <arg name="publish_joint_states" default="true" />
   <arg name="input_timeout" default="0.25" />
   <arg name="twist_topic" default="/arm_controller/cartesian_twist/command" />
-  <!-- Velocity axes follow this frame; wrist-local +Z need not point upward. -->
-  <arg name="twist_frame" default="base_link" />
+  <!-- Publish UHAS's sphere pose relative to the LEAP palm in ROS TF.
+       Velocity axes follow the sphere by default and move with the hand. -->
+  <arg name="sphere_frame" default="uhas_sphere" />
+  <arg name="twist_frame" default="$(arg sphere_frame)" />
   <!-- Linear norm in m/s; angular norm in rad/s. -->
   <arg name="max_linear_speed" default="0.4" />
   <arg name="max_angular_speed" default="1.5" />
@@ -41,6 +45,11 @@
     <arg name="auto_configure" value="$(arg auto_configure)" />
   </include>
 
+  <node if="$(eval arg('publish_joint_states') and arg('leap_state_topic') != '/joint_states')"
+    name="leap_joint_state_relay" pkg="topic_tools" type="relay"
+    args="$(arg leap_state_topic) /joint_states"
+    respawn="true" output="screen" />
+
   <node
     name="uhas_fetch_leap_controller"
     pkg="leap_ethernet"
@@ -52,6 +61,7 @@
     <param name="leap_state_topic" value="$(arg leap_state_topic)" />
     <param name="input_timeout" value="$(arg input_timeout)" />
     <param name="twist_topic" value="$(arg twist_topic)" />
+    <param name="sphere_frame" value="$(arg sphere_frame)" />
     <param name="twist_frame" value="$(arg twist_frame)" />
     <param name="max_linear_speed" value="$(arg max_linear_speed)" />
     <param name="max_angular_speed" value="$(arg max_angular_speed)" />

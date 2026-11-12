@@ -4,6 +4,8 @@
   <arg name="port" default="8888" doc="UDP port of OpenRB-150 Ethernet bridge" />
   <arg name="current_limit" default="600" doc="Motor current limit in mA" />
   <arg name="publish_to_joint_states" default="true" doc="Forward feedback to global /joint_states for TF &amp; MoveIt" />
+  <arg name="launch_gripper_action_server" default="true" doc="Start the Fetch teleop gripper action bridge" />
+  <arg name="teleop_duration" default="1.5" doc="Duration in seconds of teleop gripper movements" />
 
   <!-- 1. Low-level UDP hardware driver -->
   <include file="$(find leap_ethernet)/launch/leap_ethernet.launch">
@@ -18,5 +20,13 @@
     <param name="cmd_topic" value="/leap_hand/cmd" />
     <param name="state_topic" value="/leap_hand/state" />
     <param name="publish_to_joint_states" value="$(arg publish_to_joint_states)" />
+  </node>
+
+  <!-- 3. Translate Fetch teleop gripper actions into LEAP trajectories. -->
+  <node if="$(arg launch_gripper_action_server)" name="leap_gripper_action_server"
+        pkg="leap_ethernet" type="leap_gripper_action_server.py" output="screen">
+    <param name="action_name" value="gripper_controller/gripper_action" />
+    <param name="trajectory_action_name" value="leap_hand_controller/follow_joint_trajectory" />
+    <param name="teleop_duration" value="$(arg teleop_duration)" />
   </node>
 </launch>
